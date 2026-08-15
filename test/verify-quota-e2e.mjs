@@ -133,7 +133,7 @@ const res = {
     const dsToday = ds && ds.todayUsed
     console.log('deepseek todayUsed:', dsToday ? JSON.stringify(dsToday) : 'none')
     const pi = data.find((s) => s.provider === 'pi-ai')
-    console.log('pi-ai (auto-discovered, no preset):', pi.error ?? `${pi.kind} windows=${(pi.windows || []).length} first=${JSON.stringify(pi.windows && pi.windows[0])}`)
+    console.log('pi-ai (no preset, must NOT auto-discover):', pi === undefined ? 'absent (ok)' : 'PRESENT (unexpected)')
   },
 }
 
