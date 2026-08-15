@@ -1,0 +1,34 @@
+{
+  "name": "deepseek-harness-quota-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-provider quota monitor for DeepSeek Harness: balance type (query + JS parser) and window type (local sliding-window metering). Sidebar widget + settings section.",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-settings-general",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    }
+  },
+  "license": "MIT"
+}

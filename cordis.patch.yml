@@ -1,0 +1,10 @@
+# deepseek-harness-quota-monitor bundle patch layer.
+# Rows here are referenced by package name; the loader resolves them from the
+# profile's node_modules (installed via `dsh plugin --profile web add .`).
+#
+# All behaviour lives in the `quota-monitor` settings namespace
+# (Settings -> 额度监控): providers, usage-API urls, credential references,
+# JS parsers, windows, thresholds. Schema defaults apply when nothing is set.
+- insert:
+  - id: quota-monitor
+    name: deepseek-harness-quota-monitor
