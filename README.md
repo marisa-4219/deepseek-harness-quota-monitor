@@ -18,17 +18,24 @@ UI 两处：侧边栏设置按钮上方的圆角卡片（`sidebar.footer.action`
 
 ## 安装
 
+从 npm registry 安装（推荐）：
+
 ```sh
-# <路径> 指向本插件目录
-dsh plugin --profile web add <路径>/deepseek-harness-quota-monitor
+dsh plugin --profile web add deepseek-harness-quota-monitor
 # 然后重启 dsh web 服务
 ```
 
-> `dsh plugin` 会把参数转发给 pnpm。若本机 pnpm 不在 PATH 导致失败，可用 corepack 手动安装（效果相同，之后需手动把包名追加进 profile `package.json` 的 `dsh.profile.bundles`）：
+> `dsh plugin` 会把参数转发给 pnpm，包名会从 npm registry 拉取。若本机 pnpm 不在 PATH 导致失败，可用 corepack 手动安装（效果相同，之后需手动把包名追加进 profile `package.json` 的 `dsh.profile.bundles`）：
 >
 > ```sh
-> corepack pnpm --dir "$DSH_HOME/profiles/web" add "<路径>/deepseek-harness-quota-monitor"
+> corepack pnpm --dir "$DSH_HOME/profiles/web" add deepseek-harness-quota-monitor
 > ```
+
+开发模式（本地目录安装，改动即时生效）：
+
+```sh
+dsh plugin --profile web add <本仓库路径>
+```
 
 ## 快速开始（零配置）
 
