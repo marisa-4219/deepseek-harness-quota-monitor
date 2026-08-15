@@ -24,6 +24,7 @@
   },
   "files": [
     "lib",
+    "assets",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -40,7 +41,10 @@
         "@deepseek-ai/dsh-client-ui-primitives"
       ],
       "platform": "web"
-    }
+    },
+    "category": "extension",
+    "displayName": "额度监控",
+    "image": "https://raw.githubusercontent.com/marisa-4219/deepseek-harness-quota-monitor/master/assets/cover.svg"
   },
   "license": "MIT"
 }

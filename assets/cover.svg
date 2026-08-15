@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#141417"/>
+      <stop offset="100%" stop-color="#1d1d22"/>
+    </linearGradient>
+    <linearGradient id="lineIn" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7c93b8" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#7c93b8"/>
+    </linearGradient>
+    <linearGradient id="lineOut" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="lineCache" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#4f8ef7" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#4f8ef7"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- sparkline area -->
+  <rect x="90" y="180" width="1020" height="260" rx="18" fill="#232329" stroke="#2e2e36" stroke-width="2"/>
+
+  <!-- three lines: input / output / cache -->
+  <path d="M150 390 L260 360 L370 372 L480 300 L590 320 L700 240 L810 262 L920 210 L1030 230"
+        fill="none" stroke="url(#lineIn)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M150 400 L260 384 L370 396 L480 350 L590 366 L700 320 L810 336 L920 300 L1030 312"
+        fill="none" stroke="url(#lineOut)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M150 380 L260 352 L370 356 L480 296 L590 306 L700 236 L810 250 L920 200 L1030 216"
+        fill="none" stroke="url(#lineCache)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- end dots -->
+  <circle cx="1030" cy="230" r="7" fill="#7c93b8"/>
+  <circle cx="1030" cy="312" r="7" fill="#a78bfa"/>
+  <circle cx="1030" cy="216" r="7" fill="#4f8ef7"/>
+
+  <!-- legend -->
+  <circle cx="150" cy="486" r="6" fill="#7c93b8"/>
+  <text x="166" y="492" fill="#9fb0c9" font-family="Segoe UI, Arial, sans-serif" font-size="24">输入 Input</text>
+  <circle cx="360" cy="486" r="6" fill="#a78bfa"/>
+  <text x="376" y="492" fill="#c4b5e8" font-family="Segoe UI, Arial, sans-serif" font-size="24">输出 Output</text>
+  <circle cx="600" cy="486" r="6" fill="#4f8ef7"/>
+  <text x="616" y="492" fill="#8fb4f5" font-family="Segoe UI, Arial, sans-serif" font-size="24">缓存 Cache</text>
+
+  <!-- title -->
+  <text x="90" y="110" fill="#e8e8ec" font-family="Consolas, monospace" font-size="40" font-weight="600">deepseek-harness-quota-monitor</text>
+  <text x="92" y="156" fill="#8a8a94" font-family="Segoe UI, Arial, sans-serif" font-size="26">DeepSeek Harness 多供应商额度监控 · Multi-provider quota monitor</text>
+
+  <!-- footer -->
+  <text x="90" y="580" fill="#5a5a64" font-family="Segoe UI, Arial, sans-serif" font-size="20">余额型 API 查询 · 限额型本地计量 · 自动发现 · 预设一键添加 · MIT License</text>
+</svg>
