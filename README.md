@@ -202,6 +202,10 @@ node verify-patch-rewrite.mjs
 - 侧边栏折叠态只显示第一个（默认）供应商的紧迫信息
 - 余额查询结果有 60s 缓存（`cacheTtlMs`），修改配置后最多 60s 内生效
 
+## 友情链接
+
+- [LINUX DO](https://linux.do) —— 技术社区
+
 ## License
 
 [MIT](./LICENSE)
