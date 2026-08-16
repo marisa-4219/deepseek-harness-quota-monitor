@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harness-quota-monitor",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Multi-provider quota monitor for DeepSeek Harness: balance type (query + JS parser) and window type (local sliding-window metering). Sidebar widget + settings section.",
   "repository": {
