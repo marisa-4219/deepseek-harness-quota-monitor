@@ -93,6 +93,8 @@ const settingsGetRes = {
   end: (body) => {
     const v = JSON.parse(body)
     console.log('settings GET providers:', Object.keys(v.value.providers || {}).join(', '))
+    console.log('settings GET disabledProviders:', JSON.stringify(v.value.disabledProviders || {}))
+    console.log('settings GET autoProviders:', (v.autoProviders || []).map((a) => `${a.provider}${a.disabled ? '(off)' : ''}`).join(', '))
   },
 }
 await routeHandlers.get('/api/quota-monitor/settings')({ method: 'GET', url: '/api/quota-monitor/settings' }, settingsGetRes)
@@ -109,7 +111,10 @@ await routeHandlers.get('/api/quota-monitor/settings')({
   method: 'POST',
   url: '/api/quota-monitor/settings',
   [Symbol.asyncIterator]: async function* () {
-    yield JSON.stringify({ ops: [{ op: 'set', path: ['lowBalanceThreshold'], value: 15 }] })
+    yield JSON.stringify({ ops: [
+      { op: 'set', path: ['lowBalanceThreshold'], value: 15 },
+      { op: 'set', path: ['disabledProviders', 'pi-ai'], value: true },
+    ] })
   },
 }, settingsPostRes)
 console.log('mutate calls:', mutateCalls.map((m) => m.ns + ':' + m.ops.length).join(', '))
