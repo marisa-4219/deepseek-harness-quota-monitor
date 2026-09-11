@@ -1,8 +1,8 @@
 {
   "name": "deepseek-harness-quota-monitor",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Multi-provider quota monitor for DeepSeek Harness: balance type (query + JS parser) and window type (local sliding-window metering). Sidebar widget + settings section.",
+  "description": "Multi-provider quota monitor for DeepSeek Harness: balance type (query + JS parser) and window type (local sliding-window metering). Sidebar widget + Plugins settings card.",
   "repository": {
     "type": "git",
     "url": "https://github.com/marisa-4219/deepseek-harness-quota-monitor.git"
@@ -35,10 +35,9 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-ui-sidebar",
-        "@deepseek-ai/dsh-client-ui-settings-general",
         "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-client-ui-primitives"
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-sidebar"
       ],
       "platform": "web"
     },

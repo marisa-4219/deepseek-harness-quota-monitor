@@ -2,9 +2,13 @@
 # Rows here are referenced by package name; the loader resolves them from the
 # profile's node_modules (installed via `dsh plugin --profile web add .`).
 #
-# All behaviour lives in the `quota-monitor` settings namespace
-# (Settings -> 额度监控): providers, usage-API urls, credential references,
+# All behaviour lives in the `quota-monitor` settings namespace (Settings ->
+# Plugins -> 额度监控): providers, usage-API urls, credential references,
 # JS parsers, windows, thresholds. Schema defaults apply when nothing is set.
+#
+# This bundle inserts the row only. User configuration belongs in the settings
+# document (written by the configuration card); a profile adding `config:` to
+# this row must do so from its own cordis.patch.yml layer.
 - insert:
   - id: quota-monitor
     name: deepseek-harness-quota-monitor

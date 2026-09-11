@@ -1,6 +1,8 @@
 # deepseek-harness-quota-monitor
 
-DeepSeek Harness 多供应商额度监控插件。侧边栏实时卡片 + 设置页可视化配置，支持**余额型**（主动查询供应商 API）与**限额型**（本地滑动窗口计量）两类额度模型。
+DeepSeek Harness 多供应商额度监控插件。侧边栏实时卡片 + 「设置 → 插件」可视化配置，支持**余额型**（主动查询供应商 API）与**限额型**（本地滑动窗口计量）两类额度模型。
+
+> 本版本适配 **DSH 0.1.5-rc.1** 起的插件接口：设置命名空间走 `ctx.settings.installSection`，`/api` 端点注册在 `@deepseek-ai/dsh-client-connection` 的精确 Fetch 路由上，配置卡片注册到「设置 → 插件 → 配置」的 `settings.plugin.item`。
 
 ## 特性
 
@@ -15,7 +17,7 @@ DeepSeek Harness 多供应商额度监控插件。侧边栏实时卡片 + 设置
 - **限流事件**：模型请求被 429 限流时记录 `retry-after`，随快照返回
 - **主题适配**：明/暗色均使用产品 token，暗色下更贴近页面背景
 
-UI 两处：侧边栏设置按钮上方的圆角卡片（`sidebar.footer.action`，点击刷新，5 分钟自动轮询）、设置页「额度监控」区块（`settings.section`）。
+UI 两处：侧边栏设置按钮上方的圆角卡片（`sidebar.footer.action`，点击刷新，5 分钟自动轮询）、「设置 → 插件 → 配置」中的额度监控卡片（`settings.plugin.item`，按设置命名空间 `quota-monitor` 分发）。
 
 ## 安装
 
@@ -38,33 +40,56 @@ dsh plugin --profile web add deepseek-harness-quota-monitor
 dsh plugin --profile web add <本仓库路径>
 ```
 
+安装后 profile 的 `package.json` 应形如：
+
+```jsonc
+{
+  "dependencies": { "deepseek-harness-quota-monitor": "link:<本仓库路径>" },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "deepseek-harness-quota-monitor"   // ← 必须在这一层里，否则插件不会被挂载
+      ],
+      "patchReload": "live"
+    }
+  }
+}
+```
+
+> 只安装了 `node_modules` 而 `dsh.profile.bundles` 里没有这个名字时，插件不会加载（bundle 层列表就是挂载清单）。这一条是升级后「插件失效」的常见原因之一。
+
 ## 快速开始（零配置）
 
 不配置任何东西时：当前默认供应商（`agent-default-model`）如果是 `deepseek-official`，自动用内置余额解析器查询（key 取 `DEEPSEEK_API_KEY` 凭据引用）；其他已注册供应商自动走本地窗口计量（默认窗口 5h / 7d / 1m，无配额上限时只显示用量文本）。
 
 ## 配置
 
-设置页「额度监控」或 profile 的 `cordis.patch.yml`，同一套 schema：
+设置页「设置 → 插件 → 配置 → 额度监控」，或 profile 的 `cordis.patch.yml`，同一套 schema：
 
 ```yaml
-- id: quota-monitor
-  name: deepseek-harness-quota-monitor
-  config:
-    refreshMs: 300000          # 小组件轮询间隔（毫秒）
-    cacheTtlMs: 60000          # 余额查询缓存
-    lowBalanceThreshold: 20    # 全局低额阈值
-    showTodayUsed: true
-    windows:                   # 全局默认窗口（限额型）
-      - { label: 5h, seconds: 18000 }
-      - { label: 7d, seconds: 604800 }
-      - { label: 1m, seconds: 2592000 }
-    providers:
-      opencode-go:
-        kind: windows
-        windows:
-          - { label: 5h, seconds: 18000, limitTokens: 100000 }
-          - { label: 7d, seconds: 604800, limitTokens: 1000000 }
+- insert:
+    - id: quota-monitor
+      name: deepseek-harness-quota-monitor
+      config:
+        refreshMs: 300000          # 小组件轮询间隔（毫秒）
+        cacheTtlMs: 60000          # 余额查询缓存
+        lowBalanceThreshold: 20    # 全局低额阈值
+        showTodayUsed: true
+        windows:                   # 全局默认窗口（限额型）
+          - { label: 5h, seconds: 18000 }
+          - { label: 7d, seconds: 604800 }
+          - { label: 1m, seconds: 2592000 }
+        providers:
+          opencode-go:
+            kind: windows
+            windows:
+              - { label: 5h, seconds: 18000, limitTokens: 100000 }
+              - { label: 7d, seconds: 604800, limitTokens: 1000000 }
 ```
+
+> 行必须放在 `insert:` 块里（新行都是新增，不是覆盖）。插件自身 bundle 的 `cordis.patch.yml` 只插入不带 config 的空行，配置由设置页写入 `$DSH_HOME/settings.yaml` 的 `quota-monitor` 段。
 
 ### 每个供应商的字段
 
@@ -170,6 +195,23 @@ providers:
 }
 ```
 
+## 接口与适配要点
+
+host 端点都挂在**经认证的 `/api` 通道**上——`/api` 前缀整体由 `@deepseek-ai/dsh-client-connection` 接管，先做 Host/Origin 信任检查与浏览器会话认证，再分发。因此插件端点用 `ctx.connection.fetch.register` 注册为**精确 Fetch 路由**：
+
+| 路由 | 方法 | 作用 |
+|---|---|---|
+| `/api/quota-monitor` | GET | 快照数组，`?provider=<id>` 只取一个 |
+| `/api/quota-monitor/presets` | GET | 供应商预设 + 系统内已注册 LLM 供应商 |
+| `/api/quota-monitor/settings` | GET | 只读的自动发现供应商列表（配置读写走 Remote，见下） |
+| `/api/quota-monitor/profile-provider` | POST | 从 profile patch（base 层）移除供应商 |
+
+**配置读写**不走自有端点，而走 DSH 自带的 Remote 设置通道：`ctx.remote.settings.describe()` 读、`ctx.remote.settings.mutate(ns, ops, revision)` 写（带 revision 冲突检测，过期写入被拒绝而不是覆盖）。API Key 同理走 `ctx.remote.credentials.{describe,set,unset}`，明文永不回传。
+
+> 旧的 `ctx.webServer.register({ path: '/api/...' })` 写法会被 connection 的 `/api` 前缀路由遮蔽并返回 **401**——这是升级后端点全部 401 的原因。
+
+profile patch 的移除是**逐字编辑**：js-yaml 能读 `!!js` 表达式但**不能写出**该标签，整文件 `load → dump` 会把用户 patch 里的 `!!js` 表达式改写成普通映射。所以这里用 js-yaml 判断「这一行确实声明了该供应商」，再按缩进从原文删掉那一个条目的字节，其余行保持逐字不变；上游 `providers:` / `config:` 变空时一并清理，避免留下会解析成 `null` 的空键。
+
 ## 开发与测试
 
 目录结构：
@@ -177,16 +219,17 @@ providers:
 ```
 deepseek-harness-quota-monitor/
 ├── lib/
-│   ├── index.js          # host 端：计量、查询、解析器、预设、路由
-│   └── client.js         # client 端：侧边栏 widget + 设置页（CJS bundle）
+│   ├── index.js          # host 端：计量、查询、解析器、预设、设置与路由
+│   ├── patch.js          # profile patch 的逐字编辑（无 harness 依赖，可单测）
+│   └── client.js         # client 端：侧边栏 widget + 插件配置卡片（CJS bundle）
 ├── cordis.patch.yml      # 默认挂载条目
 ├── test/
-│   ├── verify-quota-e2e.mjs   # 端到端：mock ctx 驱动 host，验证余额/窗口/今日统计/设置读写
-│   └── verify-patch-rewrite.mjs # profile patch 改写 round-trip（!!js 表达式保留）
+│   ├── verify-quota-e2e.mjs      # host 端到端：设置命名空间注册、Fetch 路由、快照、瀑布计量、patch 移除
+│   └── verify-patch-rewrite.mjs  # profile patch 逐字编辑（嵌套 insert / 裸行 / !!js 保留 / 幂等）
 └── package.json
 ```
 
-运行测试：
+运行测试（无需网络与凭据，`js-yaml` 从 DSH 安装目录解析）：
 
 ```sh
 cd test
@@ -194,7 +237,15 @@ node verify-quota-e2e.mjs
 node verify-patch-rewrite.mjs
 ```
 
-> e2e 需要真实凭据（读 `~/.dsh/.credentials.yaml` 的 OPENCODE_API_KEY / DEEPSEEK_API_KEY）；用量存储写入系统临时目录，不污染真实数据。
+验证真实 DSH 挂载（隔离 home，不影响正在运行的 GUI）：
+
+```sh
+# 1. 复制一份 profile 清单到临时 home，bundles 里保留本插件
+# 2. 用另一个端口启动，确认插件加载与端点可用
+DSH_HOME=<临时目录> dsh --profile web --port 3199 --no-open
+# 3. 浏览器打开打印出的带 token URL：侧边栏出现额度卡片
+#    设置 → 插件 → 配置 出现「额度监控」卡片
+```
 
 ## 已知边界
 
@@ -202,6 +253,7 @@ node verify-patch-rewrite.mjs
 - 响应头级配额（`x-ratelimit-*`）目前拿不到（llm 抽象层不暴露），限流信息来自 429 错误
 - 侧边栏折叠态只显示第一个（默认）供应商的紧迫信息
 - 余额查询结果有 60s 缓存（`cacheTtlMs`），修改配置后最多 60s 内生效
+- 配置卡片内的编辑是**暂存式**：改完点「保存」才写入；供应商启用/禁用与删除是即时写入
 
 ## 友情链接
 
