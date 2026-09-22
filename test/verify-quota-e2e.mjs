@@ -1,32 +1,36 @@
 // End-to-end verification of the host half against the CURRENT harness seams.
 //
-// The plugin no longer talks to raw `webServer` routes or to a
-// `installSettingsSection` helper: it registers its namespace on the
-// `ctx.settings` seam (`installSection`) and mounts its endpoints as exact
-// Fetch routes on `ctx.connection.fetch`, because `/api` is claimed by the
-// connection service, which applies the browser-trust fence and session
-// authentication before dispatch.
+// The plugin no longer installs a settings section through a helper, and it no
+// longer mounts raw `webServer` routes:
+//
+//   * Settings (DSH >= 0.1.7) are DECLARED, not installed: the plugin exports a
+//     `Config` schema marked `.volatile()` at the root, and the settings service
+//     projects it into a form. `apply` therefore receives a `Volatile` wrapper
+//     and reads `config.get()`.
+//   * Endpoints mount as exact Fetch routes on `ctx.connection.fetch`, because
+//     `/api` is claimed by the connection service, which applies the
+//     browser-trust fence and session authentication before dispatch.
 //
 // This test drives the plugin through its own seams with fakes, so it verifies
-// the contract that broke (settings install + connection fetch routes) without
-// needing a live Harness, credentials, or network:
+// the contracts that actually broke without needing a live Harness, credentials,
+// or network:
 //
 //   node test/verify-quota-e2e.mjs
 //
 // Covered:
-//   1. the settings namespace is registered with the composition entry as base
-//      and the schema defaults resolve through it
+//   1. the exported Config is a root-volatile schema whose nested provider paths
+//      stay live-editable, and `apply` refuses a non-volatile config
 //   2. every endpoint registers as an exact Fetch route with methods + body mode
 //   3. GET /api/quota-monitor returns one snapshot per monitored provider
 //   4. the llm/stream waterfall records usage; todayUsed reports totals and an
 //      hourly series; the windows measurement reads them back
-//   5. revision-fenced writes reach `settings.mutate(ns, ops, expectedRevision)`
-//   6. provider removal unsets the user layer, then drops the profile-patch
-//      entry (and no-ops when the patch never declared it)
+//   5. GET /api/quota-monitor/settings lists only preset-backed auto providers
+//   6. provider removal drops the profile-patch entry (and no-ops when absent)
 //   7. a balance preset that needs a missing credential reports `no-key`
-//      instead of throwing
+//   8. the Command Code provider reports windows AND a credit balance from one
+//      endpoint, including the derived monthly bar
 
-import { apply } from '../lib/index.js'
+import { apply, Config } from '../lib/index.js'
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
@@ -54,14 +58,22 @@ const eq = (actual, expected, label) => {
 // ---------------------------------------------------------------------------
 // isolated harness home: usage checkpoints must never touch real data
 // ---------------------------------------------------------------------------
+//
+// Storage is redirected through the seams the plugin itself prefers — the
+// settings document's directory for the usage checkpoint, and `profileContext`
+// for the profile patch — rather than by overriding `$DSH_HOME`. That matters
+// twice over: `$DSH_HOME` is also the anchor this module resolves schemastery
+// from, and it must stay pointed at the real installation. A test that instead
+// leaves these unset appends synthetic usage rows to the operator's real
+// `$DSH_HOME/storages/quota-monitor-usage.jsonl`.
 
 const tmpHome = mkdtempSync(path.join(os.tmpdir(), 'qm-e2e-'))
 process.on('exit', () => { try { rmSync(tmpHome, { recursive: true, force: true }) } catch { /* best effort */ } })
 
 const settingsPath = path.join(tmpHome, 'settings.yaml')
+writeFileSync(settingsPath, '# isolated test settings document\n')
 const patchPath = path.join(tmpHome, 'profiles', 'web', 'cordis.patch.yml')
 mkdirSync(path.dirname(patchPath), { recursive: true })
-writeFileSync(settingsPath, '# test settings document\n')
 writeFileSync(patchPath, [
   '- insert:',
   '    - id: quota-monitor',
@@ -79,14 +91,14 @@ writeFileSync(patchPath, [
 // harness fakes: the seams the plugin consumes
 // ---------------------------------------------------------------------------
 
-const registrations = new Map() // ns -> { schema, options }
-const watchSources = new Map() // ns -> () => resolved value
-const mutateCalls = []
 const fetchRoutes = [] // exact Fetch routes on the authenticated /api channel
 const webServerRoutes = [] // must stay empty: /api is connection's
 const events = new Map()
 
-let resolvedProviders = {
+/** The resolved configuration section, as `config.get()` would return it. */
+let resolvedConfig = {
+  cacheTtlMs: 0,
+  showTodayUsed: true,
   providers: {
     'opencode-go': {
       kind: 'windows',
@@ -95,62 +107,40 @@ let resolvedProviders = {
       parse: { builtin: 'opencode-go-usage' },
       currency: 'USD',
     },
+    commandcode: {
+      kind: 'windows',
+      url: 'https://api.commandcode.ai/alpha/billing/credits',
+      apiKeyEnv: 'COMMANDCODE_API_KEY',
+      parse: { builtin: 'commandcode-credits' },
+      currency: 'USD',
+      headers: { 'user-agent': 'deepseek-harness-quota-monitor' },
+    },
   },
-}
-
-const fakeSettings = {
-  documentPath: settingsPath,
-  installSection(owner, ns, schema, entry, hooks) {
-    registrations.set(ns, { schema, base: entry })
-    hooks.setSource(() => resolvedValue())
-    hooks.onChange()
-  },
-  describe() {
-    return [{
-      ns: 'quota-monitor',
-      schema: {},
-      value: resolvedValue(),
-      revision: mutateCalls.length,
-      base: registrations.get('quota-monitor')?.base,
-      user: { providers: resolvedProviders.providers },
-      applies: 'live',
-    }]
-  },
-  async mutate(ns, ops, expectedRevision) {
-    mutateCalls.push({ ns, ops, expectedRevision })
-    for (const op of ops) {
-      if (op.path.length === 2 && op.path[0] === 'providers' && op.op === 'unset') {
-        delete resolvedProviders.providers[op.path[1]]
-      }
-      if (op.path.length === 2 && op.path[0] === 'providers' && op.op === 'set') {
-        resolvedProviders.providers[op.path[1]] = op.value
-      }
-    }
-    watchSources.get(ns)?.()
-    return { ns }
-  },
-}
-
-/** Resolve the namespace the way the settings service does: defaults, then base. */
-function resolvedValue() {
-  const registration = registrations.get('quota-monitor')
-  return registration.schema({ ...registration.base, ...resolvedProviders })
 }
 
 const ctx = {
   get(name) {
-    if (name === 'settings') return fakeSettings
+    // Redirects the usage checkpoint into the temp home: `storageDir` derives
+    // from the settings document's directory, so this keeps the operator's real
+    // usage file untouched.
+    if (name === 'settings') return { documentPath: settingsPath, get: () => undefined }
+    // Redirects profile-patch edits into the temp home.
+    if (name === 'profileContext') return { patchPath, home: tmpHome, dir: path.dirname(patchPath), name: 'web' }
     if (name === 'connection') return { fetch: { register: (route) => { fetchRoutes.push(route); return async () => {} } } }
-    // Only the working-metering provider has a resolvable credential; the
-    // balance preset's reference is deliberately unconfigured.
+    // Only the working-metering providers have resolvable credentials; the
+    // DeepSeek balance preset's reference is deliberately unconfigured.
     if (name === 'credentials') {
       return {
-        resolve: async (ref) => (ref === 'OPENCODE_API_KEY' ? { value: 'oc-test', source: 'file' } : undefined),
+        resolve: async (ref) => (
+          ref === 'OPENCODE_API_KEY' ? { value: 'oc-test', source: 'file' }
+            : ref === 'COMMANDCODE_API_KEY' ? { value: 'cc-test', source: 'file' }
+              : undefined
+        ),
       }
     }
     if (name === 'llm') {
       return {
-        listProviders: () => [{ provider: 'deepseek-official', name: 'DeepSeek' }, { provider: 'pi-ai', name: 'pi-ai' }],
+        listProviders: () => [{ id: 'deepseek-official', name: 'DeepSeek' }, { id: 'pi-ai', name: 'pi-ai' }],
         listConfigurableProviders: () => [{ provider: 'pi-ai', displayName: 'pi-ai' }],
       }
     }
@@ -161,9 +151,11 @@ const ctx = {
   webServer: { register: (route) => { webServerRoutes.push(route) } },
 }
 
-// network stub: the OpenCode GO usage shape the builtin parser expects
+// network stub: the two usage shapes the builtin parsers expect
 const realFetch = globalThis.fetch
-globalThis.fetch = async (url) => {
+const seenRequests = []
+globalThis.fetch = async (url, init) => {
+  seenRequests.push({ url: String(url), headers: init?.headers ?? {} })
   if (String(url).includes('opencode.ai')) {
     return new Response(JSON.stringify({
       usage: {
@@ -173,12 +165,53 @@ globalThis.fetch = async (url) => {
       },
     }), { status: 200, headers: { 'content-type': 'application/json' } })
   }
+  if (String(url).includes('commandcode.ai')) {
+    return new Response(JSON.stringify({
+      credits: {
+        monthlyCredits: 42.5,
+        purchasedCredits: 10,
+        freeCredits: 0,
+        belowThreshold: false,
+        creditThreshold: 5,
+        planId: 'individual-goat',
+      },
+      windowLimits: {
+        limited: true,
+        exceeded: '',
+        fiveHour: { used: 4.5, cap: 14, exceeded: false, resetAt: 1790083955000 },
+        weekly: { used: 12.0, cap: 35, exceeded: false, resetAt: 1790600000000 },
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
   return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
 }
 
-console.log('1. plugin namespace registration')
-apply(ctx, { cacheTtlMs: 0, showTodayUsed: true })
-ok(registrations.has('quota-monitor'), 'registers the `quota-monitor` settings namespace')
+console.log('1. declared volatile Config + apply')
+ok(Config !== undefined && typeof Config.toJSON === 'function', 'exports the Config schema the settings service projects')
+ok(Config.meta?.volatile === true, 'marks the root volatile, so nested provider paths stay live-editable')
+{
+  // The projection predicate the settings service uses to decide what a form
+  // may edit: a volatile root makes every declared path editable, including the
+  // dynamic provider map and its nested window array.
+  const isVolatilePath = (schema, p) => {
+    if (schema.meta?.volatile) return true
+    const [key, ...rest] = p
+    const child = key === undefined ? undefined : schema.dict?.[key]
+    return child !== undefined && isVolatilePath(child, rest)
+  }
+  ok(isVolatilePath(Config, ['providers', 'commandcode', 'url']), 'providers.<name>.url is live-editable')
+  ok(isVolatilePath(Config, ['providers', 'commandcode', 'windows', '0', 'seconds']), 'nested window fields are live-editable')
+  ok(isVolatilePath(Config, ['autoDiscover']), 'a scalar field is live-editable')
+}
+{
+  // apply() must refuse a config that is not the volatile wrapper, because that
+  // is the only shape whose edits are observable.
+  let threw = false
+  try { apply(ctx, { providers: {} }) } catch { threw = true }
+  ok(threw, 'apply() refuses a non-volatile config instead of silently freezing settings')
+}
+apply(ctx, { get: () => resolvedConfig })
+
 eq(fetchRoutes.map((r) => `${r.methods.join(',')} ${r.path}`).sort(), [
   'GET /api/quota-monitor',
   'GET /api/quota-monitor/presets',
@@ -232,15 +265,15 @@ eq(go2.windows.find((w) => w.label === '5h').usedTokens, 2150, 'window metering 
 console.log('\n4. presets endpoint')
 const presets = await (await route('GET', '/api/quota-monitor/presets')(new Request('http://dsh/api/quota-monitor/presets'))).json()
 ok(Object.keys(presets.presets).includes('deepseek-official'), 'exposes whole-provider presets')
-eq(presets.systemProviders.map((s) => s.id).sort(), ['deepseek-official', 'pi-ai'], 'lists registered LLM providers')
+ok(Object.keys(presets.presets).includes('commandcode'), 'exposes the Command Code preset')
+eq(presets.systemProviders.map((s) => s.id).sort(), ['deepseek-official', 'pi-ai'], 'lists registered LLM providers by id')
 
-console.log('\n5. auto-provider listing + revision-fenced writes')
+console.log('\n5. auto-provider listing')
 const settingsView = await (await route('GET', '/api/quota-monitor/settings')(new Request('http://dsh/api/quota-monitor/settings'))).json()
 eq(settingsView.autoProviders.map((a) => a.provider), ['deepseek-official'], 'lists only providers with a known preset')
 ok(!('value' in settingsView), 'leaves configuration reads to the shipped Remote settings transport')
-eq(mutateCalls, [], 'reading configuration performs no write')
 
-console.log('\n6. provider removal across both layers')
+console.log('\n6. provider removal from the profile patch')
 const removeRes = await (await route('POST', '/api/quota-monitor/profile-provider')(new Request('http://dsh/api/quota-monitor/profile-provider', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
@@ -265,12 +298,28 @@ eq(badRes.status, 500, 'rejects a provider-less body with a JSON error')
 ok((await badRes.json()).error.includes('expected { provider }'), 'names the expected shape')
 
 console.log('\n7. missing credential is reported, not thrown')
-// The preset is auto-discovered (it is the default agent model), but its
-// credential reference is not configured in this harness, so the query must be
-// reported as a snapshot error rather than thrown.
 const silent = await (await route('GET', '/api/quota-monitor?provider=deepseek-official')(new Request('http://dsh/api/quota-monitor?provider=deepseek-official'))).json()
 eq(silent.error, 'no-key', 'a balance provider without a configured key reports no-key')
 eq(silent.provider, 'deepseek-official', 'and still identifies the provider')
+
+console.log('\n8. Command Code: windows + credit balance from one endpoint')
+const cmd = await (await route('GET', '/api/quota-monitor?provider=commandcode')(new Request('http://dsh/api/quota-monitor?provider=commandcode'))).json()
+eq(cmd.kind, 'windows', 'reports window kind')
+const cmdW = Object.fromEntries(cmd.windows.map((w) => [w.label, w]))
+eq(cmdW['5h'].percent, 32.1, 'fiveHour percent is derived from used/cap')
+eq(cmdW['7d'].percent, 34.3, 'weekly percent is derived from used/cap')
+eq(cmdW['5h'].usedMoney, 4.5, 'window keeps its used amount')
+eq(cmdW['5h'].limitMoney, 14, 'window keeps its cap')
+eq(cmdW['5h'].resetsAt, new Date(1790083955000).toISOString(), 'resetAt epoch-ms is normalised to ISO')
+eq(cmdW['1m'].limitMoney, 70, 'monthly bar is derived from the planId allowance')
+eq(cmdW['1m'].usedMoney, 17.5, 'monthly used is derived from remaining credits')
+eq(cmd.balance.remaining, '52.5', 'credit balance rides along with the windows')
+eq(cmd.balance.total, '70', 'plan allowance is reported as the balance total')
+eq(cmd.balance.available, true, 'an empty-string `exceeded` means not blocked')
+ok(
+  seenRequests.some((r) => r.url.includes('commandcode.ai') && JSON.stringify(r.headers).includes('deepseek-harness-quota-monitor')),
+  'sends the User-Agent the endpoint requires (Cloudflare 403s without one)',
+)
 
 globalThis.fetch = realFetch
 

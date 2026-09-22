@@ -2,7 +2,7 @@
 
 DeepSeek Harness 多供应商额度监控插件。侧边栏实时卡片 + 「设置 → 插件」可视化配置，支持**余额型**（主动查询供应商 API）与**限额型**（本地滑动窗口计量）两类额度模型。
 
-> 本版本适配 **DSH 0.1.5-rc.1** 起的插件接口：设置命名空间走 `ctx.settings.installSection`，`/api` 端点注册在 `@deepseek-ai/dsh-client-connection` 的精确 Fetch 路由上，配置卡片注册到「设置 → 插件 → 配置」的 `settings.plugin.item`。
+> 本版本适配 **DSH 0.1.7-alpha.1** 起的插件接口：设置 schema 改为**导出 `Config` 声明式注册**（不再有 `installSection`），配置页注册到插件管理页的 `plugins.item` 插槽，配置改写入 profile 的 `cordis.patch.yml`（`settings.yaml` 已被上游移除）。旧版（0.1.5-rc.1 及更早）的 `installSection` / `settings.plugin.item` 接口在本版本已不适用。
 
 ## 特性
 
@@ -10,14 +10,15 @@ DeepSeek Harness 多供应商额度监控插件。侧边栏实时卡片 + 「设
 - **限额型**：本地滑动窗口用量统计（5h / 7d / 1m 等，按 `llm/stream` 瀑布采集真实 token 用量，持久化到 `$DSH_HOME/storages/quota-monitor-usage.jsonl`），对照配额上限显示剩余
 - **今日已用**：自然日桶，跨重启保留；主数字含缓存（输入 + 输出 + 缓存读），附输入/输出/缓存分项与缓存命中率（3 位小数）
 - **翻转卡片**：点击今日已用区翻转 3D 卡片，查看**输入/输出/缓存三线小时折线图**（平滑曲线、峰值标注）
-- **自动发现**：有确定预设的官方供应商（DeepSeek、OpenCode GO 等）自动进入监控；无预设的自建网关不自动发现，需手动添加
+- **自动发现**：有确定预设的官方供应商（DeepSeek、OpenCode GO、Command Code 等）自动进入监控；无预设的自建网关不自动发现，需手动添加
 - **逐个启用/禁用**：自动发现与手动配置的每个供应商都可单独暂停/恢复监控（即时生效，配置保留）
-- **预设一键添加**：`deepseek-official` / `opencode-go` / `new-api` / `sub2api` 等整体方案，选中即填好 kind/url/解析器
+- **预设一键添加**：`deepseek-official` / `opencode-go` / `commandcode` / `new-api` / `sub2api` 等整体方案，选中即填好 kind/url/解析器
 - **金额按供应商实报**：供应商在 usage 里返回价格才显示金额（无价格表、不推断），按模型明细展示
+- **供应商显示名**：卡片打印人类可读的名字（路由声明的 `displayName`，或配置的 `label`），而不是 `commandcode` 这类路由 id；两者在悬停提示里同时可见
 - **限流事件**：模型请求被 429 限流时记录 `retry-after`，随快照返回
 - **主题适配**：明/暗色均使用产品 token，暗色下更贴近页面背景
 
-UI 两处：侧边栏设置按钮上方的圆角卡片（`sidebar.footer.action`，点击刷新，5 分钟自动轮询）、「设置 → 插件 → 配置」中的额度监控卡片（`settings.plugin.item`，按设置命名空间 `quota-monitor` 分发）。
+UI 两处：侧边栏设置按钮上方的圆角卡片（`sidebar.footer.action`，点击刷新，5 分钟自动轮询）、插件管理页「Plugins」中的额度监控页（`plugins.item`，仅当 Host 正在提供 `quota-monitor` 命名空间时注册）。
 
 ## 安装
 
@@ -66,7 +67,7 @@ dsh plugin --profile web add <本仓库路径>
 
 ## 配置
 
-设置页「设置 → 插件 → 配置 → 额度监控」，或 profile 的 `cordis.patch.yml`，同一套 schema：
+设置页「插件 → 额度监控」，或 profile 的 `cordis.patch.yml`，同一套 schema：
 
 ```yaml
 - insert:
@@ -89,7 +90,7 @@ dsh plugin --profile web add <本仓库路径>
               - { label: 7d, seconds: 604800, limitTokens: 1000000 }
 ```
 
-> 行必须放在 `insert:` 块里（新行都是新增，不是覆盖）。插件自身 bundle 的 `cordis.patch.yml` 只插入不带 config 的空行，配置由设置页写入 `$DSH_HOME/settings.yaml` 的 `quota-monitor` 段。
+> 行必须放在 `insert:` 块里（新行都是新增，不是覆盖）。插件自身 bundle 的 `cordis.patch.yml` 只插入不带 config 的空行；配置由设置页写入**当前 profile 的 patch 文件**（DSH 0.1.7 起为 `$DSH_HOME/profiles/<name>/cordis.patch.yml`，用 `ctx.profileContext.patchPath` 定位）。
 
 ### 每个供应商的字段
 
@@ -105,8 +106,15 @@ dsh plugin --profile web add <本仓库路径>
 | `auth` | `bearer`（默认，自动加 `Bearer ` 前缀）或 `raw`（原样发送，如 new-api 的 System Access Token） |
 | `headers` | 附加请求头（如 new-api 的 `New-Api-User`） |
 | `platform` | 多平台网关的平台选择（sub2api 等） |
+| `label` | 卡片上的显示名。留空则用 LLM 路由自己声明的 `displayName`，再退回路由 id |
+| `planId` | 套餐 id，用于推导月额度（见 Command Code 一节） |
+| `monthlyCredits` | 月额度直接给数字（优先级高于 `planId`） |
 
 > 统计严格**按供应商隔离**：每个供应商的窗口用量、今日已用只计该供应商的调用，互不混算；金额币种取该供应商配置的 `currency`。
+
+> **显示名与路由 id 是两回事**：快照里的 `provider` 始终是路由 id（配置键、凭据作用域、本地计量、`llm/stream` 的 `provider` 字段全按它寻址），卡片另用 `label` 渲染。所以一个叫 `commandcode` 的路由可以显示成「Command Code」而不必改名——悬停时会同时给出两者。解析顺序：配置 `label` → 路由 `displayName` → 预设标签 → 路由 id。
+
+> **编辑器不会丢弃未知字段**：设置页保存时只归一化它自己拥有的字段，其余原样透传（早期版本用手写白名单，导致任何未列出的字段——例如 `planId`——在保存时被静默删除）。
 
 ### 供应商预设（一键添加）
 
@@ -116,10 +124,64 @@ dsh plugin --profile web add <本仓库路径>
 |---|---|---|
 | `deepseek-official` | 余额 | DeepSeek 官方余额 API + `deepseek-balance` 解析器 |
 | `opencode-go` | 限额 | OpenCode GO 用量 API（5h/7d/1m 百分比）+ `opencode-go-usage` 解析器 |
+| `commandcode` | 限额 + 余额 | Command Code `GET /alpha/billing/credits`（5h/7d 滚动窗口百分比 + Credits 余额）+ `commandcode-credits` 解析器，见下节 |
 | `new-api` | 余额 | one-api 系网关 `GET /api/user/self`（System Access Token，**无 Bearer** + `New-Api-User` 头，quota ÷ 500000 = 美元）+ `new-api-self` 解析器；URL 和用户 id 改成你自己的 |
 | `sub2api` | 余额 | 订阅配额网关 `GET /v1/usage`（Bearer）+ `sub2api-usage` 解析器（remaining/unit）；高级：平台配额窗口用 `sub2api-platform-quotas`（1d/7d/1m 美元限额，配 `platform` 字段选平台） |
 
 预设目录由 host 的 `/api/quota-monitor/presets` 提供（设置页拉取，同时返回系统内已注册供应商列表），扩展预设只改 host 一处。
+
+### Command Code
+
+Command Code（`cmd` CLI / [commandcode.ai](https://commandcode.ai)）的余额与滚动窗口**一次请求即可拿全**：
+
+```sh
+curl -sS 'https://api.commandcode.ai/alpha/billing/credits' \
+  -H "Authorization: Bearer $COMMANDCODE_API_KEY"
+```
+
+预设 `commandcode` 已内置该地址与解析器，只需配置 API Key（凭据引用默认 `COMMANDCODE_API_KEY`，也兼容官方的 `COMMAND_CODE_API_KEY`；key 从 [Studio](https://commandcode.ai/studio) 或 `cmd auth login` 写入的 `~/.commandcode/auth.json` 获取）。
+
+真实响应形如（下面是实测抓到的字段）：
+
+```jsonc
+{
+  "credits": { "monthlyCredits": 55.9, "purchasedCredits": 0, "freeCredits": 0,
+               "belowThreshold": false, "creditThreshold": 0 },
+  "windowLimits": {
+    "limited": true,          // 静态标记「存在窗口」，不是「已被限流」
+    "exceeded": null,         // 非 null / 非空 / true 才是真的被限流
+    "fiveHour": { "used": 0.45, "cap": 14, "exceeded": false, "resetAt": 1790100955323 },
+    "weekly":   { "used": 14.1, "cap": 35, "exceeded": false, "resetAt": 1790315960042 }
+  }
+}
+```
+
+解析器处理的坑：
+
+1. **窗口没有 `percent` 字段** —— 百分比由 `used / cap` 现算；
+2. **重置字段是 `resetAt`（epoch 毫秒）**，不是 `resetsAt`；解析器同时容忍 epoch 秒与 ISO 字符串；
+3. **`windowLimits` 有时嵌在 `credits` 里**而不是与它平级，解析器两种位置都认；
+4. **`exceeded` 有三种形态**：`false` / `null` / 字符串（`""` 或窗口名）。只有明确的 `true` 或非空字符串才算「已用尽」，`null` 按未用尽处理。
+
+#### 月额度（1m 窗口）
+
+**API 没有月窗口对象**——`/alpha/billing/credits` 只给 `monthlyCredits`（**剩余额**），既不给总额也不给 `planId`，所以月额度只能推导。请在供应商配置里声明其一：
+
+```yaml
+planId: individual-goat     # 按内置套餐表换算总额
+# 或直接给数字（优先级更高）
+monthlyCredits: 70
+```
+
+内置套餐表（Credits）：Go=10 / GOAT=70 / Pro=30 / pro-v1=80 / Provider=15 / Max=150 / Ultra=300 / Teams=40。
+
+两者都留空则**不显示月条**——宁可少一条，也不拿猜的数字当额度。声明后卡片显示 `余额 $55.9 / $70.00` 加一条 `1m 20.5%` 进度条。
+
+> 订阅接口 `/alpha/billing/subscriptions` 能拿到 `planId`，但本插件**不为它多发一次请求**；需要月条时手写 `planId` 更省事。
+
+> ⚠️ `/alpha/*` 是 Command Code CLI 自己在用的**未公开文档化**接口（官方文档只公开 `/provider/v1/*`），上游可能随时改动，且 **Go 套餐没有 API 权限**（返回 403 `upgrade_required`）。余额字段是**剩余额**而非总额，响应里也没有币种字段（按 USD 显示）。
+
+> 关于 `User-Agent`：早期资料称 Cloudflare 会拒绝无 UA 的请求（403 / error 1010）。**实测不成立**——自定义 UA、仅带 `Authorization`、显式空 UA 三种情况均返回 200。预设仍附带一个说明性 UA（无害），但它不是必需项。
 
 ### 添加供应商（系统优先）
 
@@ -137,6 +199,7 @@ dsh plugin --profile web add <本仓库路径>
    |---|---|---|
    | `deepseek-balance` | DeepSeek 官方余额 | `{ is_available, balance_infos: [{ currency, total_balance, granted_balance, topped_up_balance }] }` |
    | `opencode-go-usage` | OpenCode GO 订阅（5h/7d/1m 三窗口百分比） | `{ usage: { rolling\|weekly\|monthly: { percent, resetsAt } } }` |
+   | `commandcode-credits` | Command Code（5h/7d 窗口 + Credits 余额，可推导月条） | `{ credits: { monthlyCredits, purchasedCredits, freeCredits, planId? }, windowLimits: { fiveHour\|weekly: { used, cap, exceeded, resetAt } } }`（`windowLimits` 也容忍嵌在 `credits` 下；月条需配置 `planId` 或 `monthlyCredits`） |
    | `generic-balance` | 通用余额：`balance_infos` 数组或扁平 `{ balance\|total_balance\|total\|amount, currency }`（可包在 `data` 下） | 自动识别两种形态 |
    | `generic-percent-windows` | 通用百分比窗口：`{ usage: { <键>: { percent, resetsAt } } }`，任意窗口键 | 键名直用为 label，秒数按 label 匹配配置窗口 |
    | `new-api-self` | new-api 网关 `/api/user/self` | `{ data: { quota, used_quota } }`，单位 ÷ 500000 = 美元 |
@@ -154,6 +217,9 @@ dsh plugin --profile web add <本仓库路径>
 { kind: 'balance', balance: { currency: 'CNY', total: '110.00', granted: '10.00', toppedUp: '100.00', available: true } }
 // 限额型（只补配额上限；已用量恒来自本地计量）
 { kind: 'windows', windows: [ { label: '5h', limitTokens: 100000 } ] }
+// 限额型 + 余额：窗口型快照也可带 balance，卡片会在进度条上方一并显示（Command Code 走这条）
+{ kind: 'windows', windows: [ { label: '5h', percent: 32.1, limitMoney: 14, usedMoney: 4.5, resetsAt: '…', exceeded: false } ],
+  balance: { currency: 'USD', remaining: '52.5', total: '70' } }
 ```
 
 ### 示例：带用量 API 的限额型供应商
@@ -197,6 +263,15 @@ providers:
 
 ## 接口与适配要点
 
+### 设置：声明式 `Config`（0.1.7 起）
+
+**没有注册调用**——插件导出 `Config` schema 就是注册本身，设置服务读取该 schema 并投影成表单。两个要点：
+
+1. **`apply(ctx, config)` 收到的是 `Volatile` 包装**，不是普通对象；读取用 `config.get()`，且它每次返回最新已提交的分区（无需自己维护 `onChange`）。
+2. **根级 `.volatile()` 是必需的，不是装饰**。schemastery 明确拒绝 `dict`/`array` 之下的 volatile 字段（报 `volatile fields require a fixed object path without an enclosing volatile field`），而本插件的 `providers` 是动态 map、下面还嵌着窗口数组——逐字段标记根本无法表达。标记**根节点**即可让其下所有路径（含 `providers.<名>.url`）可实时编辑。
+
+### 端点：认证 `/api` 通道
+
 host 端点都挂在**经认证的 `/api` 通道**上——`/api` 前缀整体由 `@deepseek-ai/dsh-client-connection` 接管，先做 Host/Origin 信任检查与浏览器会话认证，再分发。因此插件端点用 `ctx.connection.fetch.register` 注册为**精确 Fetch 路由**：
 
 | 路由 | 方法 | 作用 |
@@ -210,7 +285,17 @@ host 端点都挂在**经认证的 `/api` 通道**上——`/api` 前缀整体�
 
 > 旧的 `ctx.webServer.register({ path: '/api/...' })` 写法会被 connection 的 `/api` 前缀路由遮蔽并返回 **401**——这是升级后端点全部 401 的原因。
 
+### 客户端插槽
+
+配置页注册到 `plugins.item`（**不再是** `settings.plugin.item`），并用 `ctx.configForms.whileServed([ns], …)` 包裹：命名空间未被 Host 提供时不留任何痕迹。该插槽对每个条目渲染两次——`view: 'summary'` 取卡片一行简介，`view: 'page'` 取详情正文——所以组件必须两种情况都能答。
+
+客户端 `inject` 必须逐个列出所用面（嵌套命名空间不会隐式带出根服务）：`slots`、`connection`、`remote`、`remote.settings`、`remote.credentials`、`configForms`。
+
+### profile patch 移除
+
 profile patch 的移除是**逐字编辑**：js-yaml 能读 `!!js` 表达式但**不能写出**该标签，整文件 `load → dump` 会把用户 patch 里的 `!!js` 表达式改写成普通映射。所以这里用 js-yaml 判断「这一行确实声明了该供应商」，再按缩进从原文删掉那一个条目的字节，其余行保持逐字不变；上游 `providers:` / `config:` 变空时一并清理，避免留下会解析成 `null` 的空键。
+
+patch 文件位置从 `ctx.profileContext.patchPath` 取（0.1.7 起 profile 在 `$DSH_HOME/profiles/<name>/`，不再是 `$DSH_HOME/settings.yaml` 那种写法）。
 
 ## 开发与测试
 
@@ -221,30 +306,38 @@ deepseek-harness-quota-monitor/
 ├── lib/
 │   ├── index.js          # host 端：计量、查询、解析器、预设、设置与路由
 │   ├── patch.js          # profile patch 的逐字编辑（无 harness 依赖，可单测）
-│   └── client.js         # client 端：侧边栏 widget + 插件配置卡片（CJS bundle）
+│   └── client.js         # client 端：侧边栏 widget + 插件配置页（CJS bundle）
 ├── cordis.patch.yml      # 默认挂载条目
 ├── test/
-│   ├── verify-quota-e2e.mjs      # host 端到端：设置命名空间注册、Fetch 路由、快照、瀑布计量、patch 移除
-│   └── verify-patch-rewrite.mjs  # profile patch 逐字编辑（嵌套 insert / 裸行 / !!js 保留 / 幂等）
+│   ├── verify-quota-e2e.mjs            # host 端到端：volatile Config、Fetch 路由、快照、瀑布计量、patch 移除
+│   ├── verify-commandcode-parser.mjs   # CommandCode 解析器（嵌套 windowLimits / epoch 换算 / 套餐推导）
+│   └── verify-patch-rewrite.mjs        # profile patch 逐字编辑（嵌套 insert / 裸行 / !!js 保留 / 幂等）
 └── package.json
 ```
+
+> 测试**不得**写入真实用量账本：`verify-quota-e2e.mjs` 通过 `settings.documentPath` 与 `profileContext.patchPath` 把存储重定向到临时目录（`$DSH_HOME/storages/quota-monitor-usage.jsonl` 是用户的额度历史，误写不可逆）。
 
 运行测试（无需网络与凭据，`js-yaml` 从 DSH 安装目录解析）：
 
 ```sh
 cd test
 node verify-quota-e2e.mjs
+node verify-commandcode-parser.mjs
 node verify-patch-rewrite.mjs
 ```
 
 验证真实 DSH 挂载（隔离 home，不影响正在运行的 GUI）：
 
 ```sh
-# 1. 复制一份 profile 清单到临时 home，bundles 里保留本插件
-# 2. 用另一个端口启动，确认插件加载与端点可用
-DSH_HOME=<临时目录> dsh --profile web --port 3199 --no-open
-# 3. 浏览器打开打印出的带 token URL：侧边栏出现额度卡片
-#    设置 → 插件 → 配置 出现「额度监控」卡片
+# 1. 用独立 DSH_HOME 从内置模板建一个临时 profile
+$env:DSH_HOME = "<临时目录>"
+dsh rescue --from-default-profile web
+# 2. 把本插件装进该 profile（link: 指向本仓库）
+dsh plugin --profile rescue add "link:<本仓库路径>"
+# 3. 用另一个端口启动；--no-open 是必须的，否则会弹出浏览器窗口
+dsh rescue --port 3199 --no-open
+# 4. 浏览器打开打印出的带 token URL：侧边栏出现额度卡片
+#    插件管理页 Plugins 出现「额度监控」页
 ```
 
 ## 已知边界
@@ -253,7 +346,9 @@ DSH_HOME=<临时目录> dsh --profile web --port 3199 --no-open
 - 响应头级配额（`x-ratelimit-*`）目前拿不到（llm 抽象层不暴露），限流信息来自 429 错误
 - 侧边栏折叠态只显示第一个（默认）供应商的紧迫信息
 - 余额查询结果有 60s 缓存（`cacheTtlMs`），修改配置后最多 60s 内生效
-- 配置卡片内的编辑是**暂存式**：改完点「保存」才写入；供应商启用/禁用与删除是即时写入
+- 配置页内的编辑是**暂存式**：改完点「保存」才写入；供应商启用/禁用与删除是即时写入
+- Command Code 的 `/alpha/*` 为未公开接口；其「月窗口」是按 `planId`/`monthlyCredits` 推导而非 API 返回值，未声明时不显示月条
+- 卡片上的名字取自路由 `displayName` 或配置 `label`；本地计量与配置键**始终**按路由 id 寻址，改名不影响统计
 
 ## 友情链接
 
