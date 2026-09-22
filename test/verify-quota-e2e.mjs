@@ -167,6 +167,14 @@ globalThis.fetch = async (url, init) => {
       },
     }), { status: 200, headers: { 'content-type': 'application/json' } })
   }
+  if (String(url).includes('/alpha/billing/subscriptions')) {
+    // Faithful to the live endpoint: the plan id lives here, under `data`,
+    // and NOT in the credits response.
+    return new Response(JSON.stringify({
+      success: true,
+      data: { id: 'sub_1', status: 'active', planId: 'individual-goat', quantity: 1 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
   if (String(url).includes('commandcode.ai')) {
     return new Response(JSON.stringify({
       credits: {
@@ -175,7 +183,6 @@ globalThis.fetch = async (url, init) => {
         freeCredits: 0,
         belowThreshold: false,
         creditThreshold: 5,
-        planId: 'individual-goat',
       },
       windowLimits: {
         limited: true,
@@ -314,7 +321,7 @@ eq(cmdW['7d'].percent, 34.3, 'weekly percent is derived from used/cap')
 eq(cmdW['5h'].usedMoney, 4.5, 'window keeps its used amount')
 eq(cmdW['5h'].limitMoney, 14, 'window keeps its cap')
 eq(cmdW['5h'].resetsAt, new Date(1790083955000).toISOString(), 'resetAt epoch-ms is normalised to ISO')
-eq(cmdW['1m'].limitMoney, 70, 'monthly bar is derived from the planId allowance')
+eq(cmdW['1m'].limitMoney, 70, 'monthly bar is derived from the plan allowance')
 eq(cmdW['1m'].usedMoney, 17.5, 'monthly used is derived from remaining credits')
 eq(cmd.balance.remaining, '52.5', 'credit balance rides along with the windows')
 eq(cmd.balance.total, '70', 'plan allowance is reported as the balance total')
@@ -323,6 +330,40 @@ ok(
   seenRequests.some((r) => r.url.includes('commandcode.ai') && JSON.stringify(r.headers).includes('deepseek-harness-quota-monitor')),
   'sends the preset\'s descriptive User-Agent (verified NOT required by the endpoint; harmless)',
 )
+// The provider above declares NO planId, so the monthly bar can only come from
+// the sibling subscriptions endpoint. This is the auto-discovery path, where no
+// config exists to carry a plan — requiring one there meant the bar silently
+// vanished, which is exactly the bug this covers.
+ok(
+  seenRequests.some((r) => r.url.includes('/alpha/billing/subscriptions')),
+  'resolves the plan id from the sibling endpoint when the config states none',
+)
+
+console.log('\n8b. an explicit planId is an override that skips that request')
+{
+  const before = seenRequests.length
+  resolvedConfig = {
+    ...resolvedConfig,
+    providers: {
+      ...resolvedConfig.providers,
+      commandcode: { ...resolvedConfig.providers.commandcode, planId: 'individual-goat' },
+    },
+  }
+  const pinned = await (await route('GET', '/api/quota-monitor?provider=commandcode')(new Request('http://dsh/api/quota-monitor?provider=commandcode'))).json()
+  const pinnedW = Object.fromEntries(pinned.windows.map((w) => [w.label, w]))
+  eq(pinnedW['1m'].limitMoney, 70, 'a configured planId still produces the monthly bar')
+  ok(
+    !seenRequests.slice(before).some((r) => r.url.includes('/alpha/billing/subscriptions')),
+    'and the plugin does not second-guess it with a request',
+  )
+  resolvedConfig = {
+    ...resolvedConfig,
+    providers: {
+      ...resolvedConfig.providers,
+      commandcode: { ...resolvedConfig.providers.commandcode, planId: undefined },
+    },
+  }
+}
 
 console.log('\n9. live usage event stream (SSE)')
 {

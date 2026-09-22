@@ -110,8 +110,8 @@ dsh plugin --profile web add <本仓库路径>
 | `headers` | 附加请求头（如 new-api 的 `New-Api-User`） |
 | `platform` | 多平台网关的平台选择（sub2api 等） |
 | `label` | 卡片上的显示名。留空则用 LLM 路由自己声明的 `displayName`，再退回路由 id |
-| `planId` | 套餐 id，用于推导月额度（见 Command Code 一节） |
-| `monthlyCredits` | 月额度直接给数字（优先级高于 `planId`） |
+| `planId` | 可选：**覆盖**自动获取的套餐 id（见 Command Code 一节） |
+| `monthlyCredits` | 可选：月额度直接给数字（优先级高于 `planId`） |
 
 > 统计严格**按供应商隔离**：每个供应商的窗口用量、今日已用只计该供应商的调用，互不混算；金额币种取该供应商配置的 `currency`。
 
@@ -168,19 +168,23 @@ curl -sS 'https://api.commandcode.ai/alpha/billing/credits' \
 
 #### 月额度（1m 窗口）
 
-**API 没有月窗口对象**——`/alpha/billing/credits` 只给 `monthlyCredits`（**剩余额**），既不给总额也不给 `planId`，所以月额度只能推导。请在供应商配置里声明其一：
+**API 没有月窗口对象**——`/alpha/billing/credits` 只给 `monthlyCredits`（**剩余额**），既不给总额也不给 `planId`，所以月额度只能推导。
+
+`planId` 由插件**自动获取**：预设里声明了 `derived`，指向同级的 `/alpha/billing/subscriptions`（读 `data.planId`），结果缓存 6 小时。因此**自动发现的供应商同样显示月条，无需任何配置**——这是默认路径。（早先的版本要求手写 `planId`，于是自动发现时月条会静默消失。）
+
+需要覆盖时才配置：
 
 ```yaml
-planId: individual-goat     # 按内置套餐表换算总额
+planId: individual-goat     # 覆盖自动获取的套餐
 # 或直接给数字（优先级更高）
 monthlyCredits: 70
 ```
 
+任一存在时插件**不再发那次订阅请求**——配置是真正的覆盖，不是补充。
+
 内置套餐表（Credits）：Go=10 / GOAT=70 / Pro=30 / pro-v1=80 / Provider=15 / Max=150 / Ultra=300 / Teams=40。
 
-两者都留空则**不显示月条**——宁可少一条，也不拿猜的数字当额度。声明后卡片显示 `余额 $55.9 / $70.00` 加一条 `1m 20.5%` 进度条。
-
-> 订阅接口 `/alpha/billing/subscriptions` 能拿到 `planId`，但本插件**不为它多发一次请求**；需要月条时手写 `planId` 更省事。
+套餐不在表内且未配置额度时**不显示月条**——宁可少一条，也不拿猜的数字当额度。可推导时卡片显示 `余额 $55.1 / $70.00` 加一条 `1m 21.2%` 进度条。
 
 > ⚠️ `/alpha/*` 是 Command Code CLI 自己在用的**未公开文档化**接口（官方文档只公开 `/provider/v1/*`），上游可能随时改动，且 **Go 套餐没有 API 权限**（返回 403 `upgrade_required`）。余额字段是**剩余额**而非总额，响应里也没有币种字段（按 USD 显示）。
 
