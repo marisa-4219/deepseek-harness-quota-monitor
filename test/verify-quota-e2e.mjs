@@ -29,6 +29,8 @@
 //   7. a balance preset that needs a missing credential reports `no-key`
 //   8. the Command Code provider reports windows AND a credit balance from one
 //      endpoint, including the derived monthly bar
+//   9. the SSE usage stream announces each model call's token delta, and the
+//      animation toggle gates publication (not just rendering)
 
 import { apply, Config } from '../lib/index.js'
 
@@ -214,6 +216,7 @@ apply(ctx, { get: () => resolvedConfig })
 
 eq(fetchRoutes.map((r) => `${r.methods.join(',')} ${r.path}`).sort(), [
   'GET /api/quota-monitor',
+  'GET /api/quota-monitor/events',
   'GET /api/quota-monitor/presets',
   'GET /api/quota-monitor/settings',
   'POST /api/quota-monitor/profile-provider',
@@ -318,8 +321,81 @@ eq(cmd.balance.total, '70', 'plan allowance is reported as the balance total')
 eq(cmd.balance.available, true, 'an empty-string `exceeded` means not blocked')
 ok(
   seenRequests.some((r) => r.url.includes('commandcode.ai') && JSON.stringify(r.headers).includes('deepseek-harness-quota-monitor')),
-  'sends the User-Agent the endpoint requires (Cloudflare 403s without one)',
+  'sends the preset\'s descriptive User-Agent (verified NOT required by the endpoint; harmless)',
 )
+
+console.log('\n9. live usage event stream (SSE)')
+{
+  const sse = await route('GET', '/api/quota-monitor/events')(new Request('http://dsh/api/quota-monitor/events'))
+  eq(sse.status, 200, 'the stream route answers 200')
+  ok(
+    String(sse.headers.get('content-type') ?? '').includes('text/event-stream'),
+    'declares text/event-stream, which the web server exempts from gzip',
+  )
+
+  const decoder = new TextDecoder()
+  const frameReader = (body) => {
+    const reader = body.getReader()
+    let buffered = ''
+    return {
+      async next() {
+        while (!buffered.includes('\n\n')) {
+          const { value, done } = await reader.read()
+          if (done) return null
+          buffered += decoder.decode(value, { stream: true })
+        }
+        const cut = buffered.indexOf('\n\n')
+        const frame = buffered.slice(0, cut)
+        buffered = buffered.slice(cut + 2)
+        return frame
+      },
+      cancel: () => reader.cancel(),
+    }
+  }
+  /** Push one usage chunk through the waterfall, as a model call would. */
+  const driveCall = async (provider, input, output) => {
+    const chunks = (async function* () {
+      yield { type: 'usage', usage: { inputTokens: input, outputTokens: output } }
+    })()
+    for await (const _chunk of waterfall({ provider, model: 'kimi-k2' }, () => chunks)) { /* drain */ }
+  }
+
+  const frames = frameReader(sse.body)
+  const hello = await frames.next()
+  ok(hello !== null && hello.includes('"type":"hello"'), 'opens with a hello frame')
+  ok(hello !== null && hello.includes('"animate":true'), 'reports the animation enabled by default')
+
+  await driveCall('opencode-go', 700, 300)
+  const usage = await frames.next()
+  ok(usage !== null && usage.includes('"type":"usage"'), 'publishes a usage frame when a call reports usage')
+  ok(usage !== null && usage.includes('"tokens":1000'), "carries that call's token delta")
+  ok(usage !== null && usage.includes('"provider":"opencode-go"'), 'carries the provider route id')
+  await frames.cancel()
+
+  // The toggle gates PUBLICATION, not just rendering, so a disabled card does
+  // no serialization work per model call.
+  resolvedConfig.usageAnimation = false
+  const off = await route('GET', '/api/quota-monitor/events')(new Request('http://dsh/api/quota-monitor/events'))
+  const offFrames = frameReader(off.body)
+  const offHello = await offFrames.next()
+  ok(offHello !== null && offHello.includes('"animate":false'), 'a later connection learns the animation is off')
+  await driveCall('opencode-go', 5000, 5000)
+  const afterOff = await Promise.race([
+    offFrames.next(),
+    new Promise((resolve) => setTimeout(() => resolve('TIMEOUT'), 150)),
+  ])
+  ok(afterOff === 'TIMEOUT', 'switched off, a model call publishes nothing')
+  await offFrames.cancel()
+  resolvedConfig.usageAnimation = true
+
+  // The stream is decoration: those same calls must still be accounted for.
+  const afterStream = await (await route('GET', '/api/quota-monitor?provider=opencode-go')(new Request('http://dsh/api/quota-monitor?provider=opencode-go'))).json()
+  ok(
+    afterStream.todayUsed.tokens >= 2150 + 1000 + 10000,
+    'animation is decoration only — every announced call is still recorded',
+    `tokens=${afterStream.todayUsed.tokens}`,
+  )
+}
 
 globalThis.fetch = realFetch
 

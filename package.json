@@ -1,8 +1,8 @@
 {
   "name": "deepseek-harness-quota-monitor",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
-  "description": "Multi-provider quota monitor for DeepSeek Harness: balance type (query + JS parser) and window type (local sliding-window metering), with first-class Command Code support. Sidebar widget + Plugins page.",
+  "description": "Multi-provider quota monitor for DeepSeek Harness: balance type (query + JS parser) and window type (local sliding-window metering), with Command Code support, live spend animation and refresh progress. Sidebar widget + Plugins page.",
   "repository": {
     "type": "git",
     "url": "https://github.com/marisa-4219/deepseek-harness-quota-monitor.git"

@@ -15,6 +15,8 @@ DeepSeek Harness 多供应商额度监控插件。侧边栏实时卡片 + 「设
 - **预设一键添加**：`deepseek-official` / `opencode-go` / `commandcode` / `new-api` / `sub2api` 等整体方案，选中即填好 kind/url/解析器
 - **金额按供应商实报**：供应商在 usage 里返回价格才显示金额（无价格表、不推断），按模型明细展示
 - **供应商显示名**：卡片打印人类可读的名字（路由声明的 `displayName`，或配置的 `label`），而不是 `commandcode` 这类路由 id；两者在悬停提示里同时可见
+- **刷新有反馈**：点卡片立刻出现转圈指示并短暂锁定按钮，不再依赖一闪而过的顶部横幅
+- **消耗动画**：每次模型调用从卡片飘出一个 `-N` 并轻微抖动，连续消耗连续抖；设置页可关闭
 - **限流事件**：模型请求被 429 限流时记录 `retry-after`，随快照返回
 - **主题适配**：明/暗色均使用产品 token，暗色下更贴近页面背景
 
@@ -78,6 +80,7 @@ dsh plugin --profile web add <本仓库路径>
         cacheTtlMs: 60000          # 余额查询缓存
         lowBalanceThreshold: 20    # 全局低额阈值
         showTodayUsed: true
+        usageAnimation: true       # 额度消耗动画（飘 -N + 抖动），纯视觉
         windows:                   # 全局默认窗口（限额型）
           - { label: 5h, seconds: 18000 }
           - { label: 7d, seconds: 604800 }
@@ -277,6 +280,7 @@ host 端点都挂在**经认证的 `/api` 通道**上——`/api` 前缀整体�
 | 路由 | 方法 | 作用 |
 |---|---|---|
 | `/api/quota-monitor` | GET | 快照数组，`?provider=<id>` 只取一个 |
+| `/api/quota-monitor/events` | GET | SSE：每次模型调用的 token 增量（仅供动画） |
 | `/api/quota-monitor/presets` | GET | 供应商预设 + 系统内已注册 LLM 供应商 |
 | `/api/quota-monitor/settings` | GET | 只读的自动发现供应商列表（配置读写走 Remote，见下） |
 | `/api/quota-monitor/profile-provider` | POST | 从 profile patch（base 层）移除供应商 |
@@ -290,6 +294,26 @@ host 端点都挂在**经认证的 `/api` 通道**上——`/api` 前缀整体�
 配置页注册到 `plugins.item`（**不再是** `settings.plugin.item`），并用 `ctx.configForms.whileServed([ns], …)` 包裹：命名空间未被 Host 提供时不留任何痕迹。该插槽对每个条目渲染两次——`view: 'summary'` 取卡片一行简介，`view: 'page'` 取详情正文——所以组件必须两种情况都能答。
 
 客户端 `inject` 必须逐个列出所用面（嵌套命名空间不会隐式带出根服务）：`slots`、`connection`、`remote`、`remote.settings`、`remote.credentials`、`configForms`。
+
+### 消耗动画与实时推送（SSE）
+
+卡片需要一个「刚刚花了多少」的**实时**信号，而 host 侧本来就有：`llm/stream` 瀑布逐个 usage 块采集用量，插件早就在监听它记账。
+
+问题在于怎么推给浏览器。**没有用 `ctx.remote.$on`**，因为那套事件是一份**编译期固定白名单**——`API_REMOTE_FORWARDED_EVENTS` 定义在 `@deepseek-ai/dsh-api-remotes` 里，第三方 bundle 无法往里加键。
+
+所以改用 **SSE**（`GET /api/quota-monitor/events`）。这不是绕路，而是被支持的通道：
+
+- 连接层的 http↔fetch 桥接**逐块转发 `response.body`**（带背压与 drain 处理），流式响应不会被攒成一坨；
+- web server 明确对 `text/event-stream` **豁免 gzip 压缩**（否则压缩中间件会缓冲整个流），说明流式响应是预期用法。
+
+两条关键约束：
+
+1. **流里没有任何账目**。帧只携带一次调用的 token 增量，卡片上的每个数字仍然来自快照端点。连接断掉只损失动画，不损失准确性。
+2. **开关在 host 侧就拦掉发布**（`usageAnimation === false` 时 `publishUsage` 直接返回），所以关掉动画后每次模型调用不产生任何序列化开销，而不只是「推了但前端不画」。
+
+动画本身：每次事件在卡片右上角生成一个绝对定位的 `-N`，1.15s 向上飘散淡出；同时给卡片加 `.qm-cardShake` 触发 0.45s 抖动。抖动通过**移除 class → 强制 reflow → 重新加回**来保证每个事件都从零重放（否则重复加同名 class 是空操作），所以连续消耗会读作持续颤动。并发飘字上限 5 条，防止并行子代理时叠成一片；`prefers-reduced-motion` 下抖动关闭、飘字退化为原地淡出。
+
+刷新反馈：手动刷新会显示 `.qm-spinner` 并禁用按钮，且**至少保持 450ms**——本机往返可能几毫秒就结束，短于一个渲染帧，用户会以为「点了没反应」，这正是原来那个 toast 想解决却解决得不好的问题。
 
 ### profile patch 移除
 
@@ -309,7 +333,7 @@ deepseek-harness-quota-monitor/
 │   └── client.js         # client 端：侧边栏 widget + 插件配置页（CJS bundle）
 ├── cordis.patch.yml      # 默认挂载条目
 ├── test/
-│   ├── verify-quota-e2e.mjs            # host 端到端：volatile Config、Fetch 路由、快照、瀑布计量、patch 移除
+│   ├── verify-quota-e2e.mjs            # host 端到端：volatile Config、Fetch 路由、快照、瀑布计量、SSE 用量流、patch 移除
 │   ├── verify-commandcode-parser.mjs   # CommandCode 解析器（嵌套 windowLimits / epoch 换算 / 套餐推导）
 │   └── verify-patch-rewrite.mjs        # profile patch 逐字编辑（嵌套 insert / 裸行 / !!js 保留 / 幂等）
 └── package.json
@@ -347,6 +371,8 @@ dsh rescue --port 3199 --no-open
 - 侧边栏折叠态只显示第一个（默认）供应商的紧迫信息
 - 余额查询结果有 60s 缓存（`cacheTtlMs`），修改配置后最多 60s 内生效
 - 配置页内的编辑是**暂存式**：改完点「保存」才写入；供应商启用/禁用与删除是即时写入
+- 消耗动画是**装饰**：它由实时事件驱动，卡片数字仍按 `refreshMs` 更新，所以动画出现后额度数字可能要等下一次刷新才变；关闭动画不影响任何统计
+- 动画依赖一条常驻 SSE 连接（每开一个页面一条，空闲时 25s 一次心跳）；连接不可用时只是没有动画
 - Command Code 的 `/alpha/*` 为未公开接口；其「月窗口」是按 `planId`/`monthlyCredits` 推导而非 API 返回值，未声明时不显示月条
 - 卡片上的名字取自路由 `displayName` 或配置 `label`；本地计量与配置键**始终**按路由 id 寻址，改名不影响统计
 
