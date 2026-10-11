@@ -101,6 +101,7 @@ const events = new Map()
 let resolvedConfig = {
   cacheTtlMs: 0,
   showTodayUsed: true,
+  panelMode: 'compact',
   // Mirrors the Config schema's own default. The settings service MATERIALIZES
   // the schema, so the real object always carries these three windows even when
   // the user configured none — which is why a provider with no usable window
@@ -246,6 +247,11 @@ ok(Config.meta?.volatile === true, 'marks the root volatile, so nested provider 
   ok(isVolatilePath(Config, ['providers', 'commandcode', 'url']), 'providers.<name>.url is live-editable')
   ok(isVolatilePath(Config, ['providers', 'commandcode', 'windows', '0', 'seconds']), 'nested window fields are live-editable')
   ok(isVolatilePath(Config, ['autoDiscover']), 'a scalar field is live-editable')
+  // Panel density is a declared, live-editable field with a default, because a
+  // deployment that never touched it must come up in compact mode.
+  ok(Config.dict?.panelMode !== undefined, 'panelMode is declared in the schema')
+  ok(isVolatilePath(Config, ['panelMode']), 'panelMode is live-editable')
+  eq(Config.dict?.panelMode?.meta?.default, 'compact', 'panelMode defaults to the compact panel')
 }
 {
   // apply() must refuse a config that is not the volatile wrapper, because that
