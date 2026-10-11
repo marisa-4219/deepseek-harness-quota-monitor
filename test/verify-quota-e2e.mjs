@@ -101,6 +101,16 @@ const events = new Map()
 let resolvedConfig = {
   cacheTtlMs: 0,
   showTodayUsed: true,
+  // Mirrors the Config schema's own default. The settings service MATERIALIZES
+  // the schema, so the real object always carries these three windows even when
+  // the user configured none — which is why a provider with no usable window
+  // data still renders three bars instead of nothing. Omitting them here hid
+  // exactly that behaviour from this harness.
+  windows: [
+    { label: '5h', seconds: 5 * 3600 },
+    { label: '7d', seconds: 7 * 86400 },
+    { label: '1m', seconds: 30 * 86400 },
+  ],
   providers: {
     'opencode-go': {
       kind: 'windows',
@@ -434,6 +444,69 @@ console.log('\n8c. Cline: alias discovery + ClinePass windows')
     asked.some((r) => JSON.stringify(r.headers).includes('cline-test')),
     'authenticates with the CLINE_API_KEY credential',
   )
+}
+
+console.log('\n8d. a partial explicit entry no longer erases its preset')
+{
+  // The exact shape that produced the reported bug: the settings page built a
+  // blank local-only entry for a system route whose preset is keyed by an ALIAS
+  // (`cline` vs `cline-pass`).
+  //
+  // The empty placeholders are the whole point, not noise. The settings service
+  // MATERIALIZES this schema, so an entry the user never filled in arrives as
+  // `parse: {}` / `headers: {}` / `windows: []` rather than with absent keys. A
+  // first attempt at this fixture wrote a hand-cleaned `{ kind, currency }`,
+  // which passed against a `??`-based fix that the real shape defeats — the
+  // empty `parse: {}` is not nullish, so `??` kept it, `loadParser({})` returned
+  // null, and the snapshot came back windowless and errorless. Keep these
+  // placeholders here or this section stops reproducing anything.
+  resolvedConfig = {
+    ...resolvedConfig,
+    providers: {
+      ...resolvedConfig.providers,
+      'cline-pass': { kind: 'windows', headers: {}, parse: {}, windows: [], currency: 'CNY', auth: 'bearer' },
+    },
+  }
+  const before = seenRequests.length
+  const layered = await (await route('GET', '/api/quota-monitor?provider=cline-pass')(new Request('http://dsh/api/quota-monitor?provider=cline-pass'))).json()
+  eq(layered.windows.map((w) => w.label), ['5h', '7d', '1m'], 'the preset still supplies the windows')
+  ok(
+    layered.windows.length === 3 && layered.windows.every((w) => typeof w.percent === 'number'),
+    'windows carry provider percentages instead of bare token counts',
+    // Length is asserted too: `[].every(...)` is vacuously true, so a snapshot
+    // that lost its windows entirely would otherwise pass this line.
+    JSON.stringify(layered.windows.map((w) => w.percent)),
+  )
+  ok(!layered.error, 'and no error is reported', `error=${layered.error}`)
+  ok(layered.balance === undefined, 'the layered entry does not invent a balance')
+  ok(
+    seenRequests.slice(before).some((r) => r.url.includes('api.cline.bot')),
+    'the query actually went out, so an empty entry no longer swallows the preset',
+  )
+  // The entry's own values must still win where it states them.
+  eq(layered.currency, 'CNY', 'a field the entry states is kept')
+
+  // An entry that states its own url keeps it. The preset still fills what the
+  // entry omits (here the credential reference, which is why the request goes
+  // out at all) but never overrides a field the entry states.
+  resolvedConfig = {
+    ...resolvedConfig,
+    providers: {
+      ...resolvedConfig.providers,
+      'cline-pass': {
+        kind: 'windows', headers: {}, windows: [], currency: 'CNY', auth: 'bearer',
+        url: 'https://example.invalid/mine', parse: { builtin: 'cline-usage' },
+      },
+    },
+  }
+  const before2 = seenRequests.length
+  await route('GET', '/api/quota-monitor?provider=cline-pass')(new Request('http://dsh/api/quota-monitor?provider=cline-pass'))
+  const asked = seenRequests.slice(before2)
+  ok(asked.some((r) => r.url.includes('example.invalid')), 'an entry that states a url is respected as-is')
+  ok(!asked.some((r) => r.url.includes('api.cline.bot')), "the preset's url is not used behind its back")
+
+  delete resolvedConfig.providers['cline-pass']
+  resolvedConfig = { ...resolvedConfig }
 }
 
 console.log('\n9. live usage event stream (SSE)')
