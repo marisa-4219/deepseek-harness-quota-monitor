@@ -3,6 +3,8 @@
 DeepSeek Harness 多供应商额度监控插件。侧边栏实时卡片 + 「设置 → 插件」可视化配置，支持**余额型**（主动查询供应商 API）与**限额型**（本地滑动窗口计量）两类额度模型。
 
 > 本版本适配 **DSH 0.1.7-alpha.1** 起的插件接口：设置 schema 改为**导出 `Config` 声明式注册**（不再有 `installSection`），配置页注册到插件管理页的 `plugins.item` 插槽，配置改写入 profile 的 `cordis.patch.yml`（`settings.yaml` 已被上游移除）。旧版（0.1.5-rc.1 及更早）的 `installSection` / `settings.plugin.item` 接口在本版本已不适用。
+>
+> 已在 **DSH 0.2.0-rc.2**（npm 的 `latest`）与 **0.2.1-alpha.2**（`alpha`）上做过干净容器的端到端回归：宿主加载、客户端 bundle 组合、`plugins.item` 配置页、`/api` 路由与 SSE 全部通过。
 
 ## 特性
 
@@ -10,9 +12,9 @@ DeepSeek Harness 多供应商额度监控插件。侧边栏实时卡片 + 「设
 - **限额型**：本地滑动窗口用量统计（5h / 7d / 1m 等，按 `llm/stream` 瀑布采集真实 token 用量，持久化到 `$DSH_HOME/storages/quota-monitor-usage.jsonl`），对照配额上限显示剩余
 - **今日已用**：自然日桶，跨重启保留；主数字含缓存（输入 + 输出 + 缓存读），附输入/输出/缓存分项与缓存命中率（3 位小数）
 - **翻转卡片**：点击今日已用区翻转 3D 卡片，查看**输入/输出/缓存三线小时折线图**（平滑曲线、峰值标注）
-- **自动发现**：有确定预设的官方供应商（DeepSeek、OpenCode GO、Command Code 等）自动进入监控；无预设的自建网关不自动发现，需手动添加
+- **自动发现**：有确定预设的官方供应商（DeepSeek、OpenCode GO、Command Code、Cline 等）自动进入监控；预设可声明 `aliases`，路由名与预设键不一致时也能匹配（例如路由叫 `cline-pass`、预设键是 `cline`）；无预设的自建网关不自动发现，需手动添加
 - **逐个启用/禁用**：自动发现与手动配置的每个供应商都可单独暂停/恢复监控（即时生效，配置保留）
-- **预设一键添加**：`deepseek-official` / `opencode-go` / `commandcode` / `new-api` / `sub2api` 等整体方案，选中即填好 kind/url/解析器
+- **预设一键添加**：`deepseek-official` / `opencode-go` / `commandcode` / `cline` / `new-api` / `sub2api` 等整体方案，选中即填好 kind/url/解析器
 - **金额按供应商实报**：供应商在 usage 里返回价格才显示金额（无价格表、不推断），按模型明细展示
 - **供应商显示名**：卡片打印人类可读的名字（路由声明的 `displayName`，或配置的 `label`），而不是 `commandcode` 这类路由 id；两者在悬停提示里同时可见
 - **刷新有反馈**：点卡片立刻出现转圈指示并短暂锁定按钮，不再依赖一闪而过的顶部横幅
@@ -128,6 +130,7 @@ dsh plugin --profile web add <本仓库路径>
 | `deepseek-official` | 余额 | DeepSeek 官方余额 API + `deepseek-balance` 解析器 |
 | `opencode-go` | 限额 | OpenCode GO 用量 API（5h/7d/1m 百分比）+ `opencode-go-usage` 解析器 |
 | `commandcode` | 限额 + 余额 | Command Code `GET /alpha/billing/credits`（5h/7d 滚动窗口百分比 + Credits 余额）+ `commandcode-credits` 解析器，见下节 |
+| `cline` | 限额 | Cline（ClinePass）`GET /api/v1/users/me/plan/usage-limits`（5h/7d/1m 百分比）+ `cline-usage` 解析器，见下节。别名 `cline-pass` |
 | `new-api` | 余额 | one-api 系网关 `GET /api/user/self`（System Access Token，**无 Bearer** + `New-Api-User` 头，quota ÷ 500000 = 美元）+ `new-api-self` 解析器；URL 和用户 id 改成你自己的 |
 | `sub2api` | 余额 | 订阅配额网关 `GET /v1/usage`（Bearer）+ `sub2api-usage` 解析器（remaining/unit）；高级：平台配额窗口用 `sub2api-platform-quotas`（1d/7d/1m 美元限额，配 `platform` 字段选平台） |
 
@@ -190,6 +193,45 @@ monthlyCredits: 70
 
 > 关于 `User-Agent`：早期资料称 Cloudflare 会拒绝无 UA 的请求（403 / error 1010）。**实测不成立**——自定义 UA、仅带 `Authorization`、显式空 UA 三种情况均返回 200。预设仍附带一个说明性 UA（无害），但它不是必需项。
 
+### Cline（ClinePass）
+
+Cline 上游有**两个独立钱包**：ClinePass 订阅窗口，与按量积分。本插件目前只监控**窗口**——订阅的实际额度。
+
+Cline 的账号接口与它自己的客户端同源，用账号的 API Key 直连即可（响应统一包在 `{success, error, data}` 信封里）：
+
+```sh
+curl -sS 'https://api.cline.bot/api/v1/users/me/plan/usage-limits' \
+  -H "Authorization: Bearer $CLINE_API_KEY"
+```
+
+真实响应（实测抓取；`resetsAt` 是纳秒精度，原样透传）：
+
+```jsonc
+{
+  "success": true,
+  "data": {
+    "limits": [
+      { "type": "five_hour", "percentUsed": 13, "resetsAt": "2026-10-11T15:37:19.56967282Z" },
+      { "type": "weekly",    "percentUsed": 5,  "resetsAt": "2026-10-18T10:37:19.571559272Z" },
+      { "type": "monthly",   "percentUsed": 2,  "resetsAt": "2026-11-10T10:37:19.573834684Z" }
+    ]
+  }
+}
+```
+
+字段要点（均为实测结论，非文档推断）：
+
+- `type` 是**单词**（`five_hour` / `weekly` / `monthly`），映射到通用 label `5h` / `7d` / `1m`；未识别的类型**跳过而不猜**
+- `percentUsed` **已是 0–100 的百分比**，不做任何换算
+- 窗口**尚未开始**时没有 `resetsAt`——条照画，不编造重置时间
+- **未订阅 ClinePass** 时该接口返回 404（或空 `limits`），查询报失败：没有窗口可画，这是正确行为
+
+> ⚠️ **凭据引用名请用 `CLINE_API_KEY`。**
+> 若推理走网关（sub2api 等）转发，`CLINE_PASS_API_KEY` 这类名字里存的是**网关 key**，而 `api.cline.bot` 会以 **401** 拒绝它（已用真实凭据实测）。额度监控需要 Cline **自己的** API Key，所以单独用一个引用名——它和推理用的凭据是两回事。
+> 同理，额度查询**直连 Cline**，不经过网关：网关没有暴露上游订阅窗口的用户级接口。
+
+**积分余额暂不显示。** 余额需要两步（先 `/users/me` 取 id，再 `/users/{id}/balance`——没有 `/users/me/balance`，它会 400），而插件现有的 `derived` 机制是单跳的。该额度单位为百万分之一积分，1 积分 = 1 美元；对订阅用户来说窗口才是有效额度，所以先不做。
+
 ### 添加供应商（系统优先）
 
 设置页「添加供应商」下拉**优先列出系统内已注册的 LLM 供应商**（`ctx.llm.listProviders()` + `listConfigurableProviders()`，如 deepseek-official、pi-ai），**配置键名自动使用其路由 id**——本地流量（瀑布按路由 id 打标）必然归入同名卡片，杜绝手写名字不一致。选中后有预设的自动套预设（如 DeepSeek 余额查询），没有的建空白限额条目（本地计量）。预设方案（如 opencode-go）和手动自定义名保留为兜底（外部订阅账号等）。
@@ -197,6 +239,8 @@ monthlyCredits: 70
 ### 自动发现
 
 自动发现只覆盖**有确定预设**的供应商（官方 API，如 deepseek-official、opencode-go）：它们自动进入监控列表并按预设查询。**没有预设的供应商不会被自动发现**——自建/自定义网关（如 sub2api 自建站）无法匹配查询配置、也无法判断余额/限额类型，需要时请手动添加。手动配置的 providers 总是叠加监控。可在全局设置关闭自动发现；也可在设置页对**任意供应商单独禁用/启用**（`disabledProviders` 配置，`{ [id]: true }`），禁用的供应商不监控但配置保留。
+
+匹配是**预设键与路由 id 相等**，外加预设可选的 `aliases` 列表。别名存在的意义是：路由叫什么由使用者决定，常常按**订阅名**而非**厂商名**取（例如路由叫 `cline-pass`，而预设键是 `cline`）。解析在**查找时**发生，而不是把路由 id 改写成预设键——这样快照里的 `provider` 仍是路由 id，本地计量（`llm/stream` 按路由 id 打标）和「今日已用」不会错位。
 
 ### JS 解析器三种形态
 
@@ -207,6 +251,7 @@ monthlyCredits: 70
    | `deepseek-balance` | DeepSeek 官方余额 | `{ is_available, balance_infos: [{ currency, total_balance, granted_balance, topped_up_balance }] }` |
    | `opencode-go-usage` | OpenCode GO 订阅（5h/7d/1m 三窗口百分比） | `{ usage: { rolling\|weekly\|monthly: { percent, resetsAt } } }` |
    | `commandcode-credits` | Command Code（5h/7d 窗口 + Credits 余额，可推导月条） | `{ credits: { monthlyCredits, purchasedCredits, freeCredits, planId? }, windowLimits: { fiveHour\|weekly: { used, cap, exceeded, resetAt } } }`（`windowLimits` 也容忍嵌在 `credits` 下；月条需配置 `planId` 或 `monthlyCredits`） |
+   | `cline-usage` | Cline（ClinePass 5h/7d/1m 三窗口百分比） | `{ data: { limits: [{ type: five_hour\|weekly\|monthly, percentUsed, resetsAt? }] } }`（信封可省；`percentUsed` 已是百分比） |
    | `generic-balance` | 通用余额：`balance_infos` 数组或扁平 `{ balance\|total_balance\|total\|amount, currency }`（可包在 `data` 下） | 自动识别两种形态 |
    | `generic-percent-windows` | 通用百分比窗口：`{ usage: { <键>: { percent, resetsAt } } }`，任意窗口键 | 键名直用为 label，秒数按 label 匹配配置窗口 |
    | `new-api-self` | new-api 网关 `/api/user/self` | `{ data: { quota, used_quota } }`，单位 ÷ 500000 = 美元 |
@@ -337,8 +382,9 @@ deepseek-harness-quota-monitor/
 │   └── client.js         # client 端：侧边栏 widget + 插件配置页（CJS bundle）
 ├── cordis.patch.yml      # 默认挂载条目
 ├── test/
-│   ├── verify-quota-e2e.mjs            # host 端到端：volatile Config、Fetch 路由、快照、瀑布计量、SSE 用量流、patch 移除
+│   ├── verify-quota-e2e.mjs            # host 端到端：volatile Config、Fetch 路由、快照、瀑布计量、SSE 用量流、patch 移除、别名发现
 │   ├── verify-commandcode-parser.mjs   # CommandCode 解析器（嵌套 windowLimits / epoch 换算 / 套餐推导）
+│   ├── verify-cline-parser.mjs         # Cline 解析器（三档映射 / 信封可省 / 缺 resetsAt / 未识别类型跳过）
 │   └── verify-patch-rewrite.mjs        # profile patch 逐字编辑（嵌套 insert / 裸行 / !!js 保留 / 幂等）
 └── package.json
 ```
@@ -351,6 +397,7 @@ deepseek-harness-quota-monitor/
 cd test
 node verify-quota-e2e.mjs
 node verify-commandcode-parser.mjs
+node verify-cline-parser.mjs
 node verify-patch-rewrite.mjs
 ```
 
@@ -368,6 +415,10 @@ dsh rescue --port 3199 --no-open
 #    插件管理页 Plugins 出现「额度监控」页
 ```
 
+干净容器回归（验证**最新** DSH，不碰本机环境）：在 `node:22-bookworm-slim` 里从 registry 全局安装目标 DSH 版本，用内置模板初始化一个 profile，把本插件放进该 profile 的 `node_modules` 并加进 `dsh.profile.bundles`，然后启动。回归脚本必须在**容器内**执行——DSH 有意**拒绝 `--host 0.0.0.0`**（官方理由是会把远程代码执行暴露到网络），所以发布端口到不了它绑定的回环地址。
+
+除 HTTP 端点外，还要断言客户端半边出现在服务端发出的 `__DSH_BOOT__` 模块图里——这是「客户端 bundle 真的组合成功、浏览器将执行它」最直接的证据，比只看宿主没报错强得多。
+
 ## 已知边界
 
 - 本地计量只统计经过 DSH 的请求（其他工具用同一 key 的用量不计入）
@@ -379,6 +430,8 @@ dsh rescue --port 3199 --no-open
 - 动画依赖一条常驻 SSE 连接（每开一个页面一条，空闲时 25s 一次心跳）；连接不可用时只是没有动画
 - Command Code 的 `/alpha/*` 为未公开接口；其「月窗口」是按 `planId`/`monthlyCredits` 推导而非 API 返回值，未声明时不显示月条
 - 卡片上的名字取自路由 `displayName` 或配置 `label`；本地计量与配置键**始终**按路由 id 寻址，改名不影响统计
+- Cline 只显示 ClinePass 三档窗口，**不含积分余额**（余额接口需要 `me` → id → `balance` 两跳，单跳的 `derived` 表达不了）；未订阅 ClinePass 的账号该接口 404，表现为查询失败
+- Cline 额度监控需要它**自己的** API Key（`CLINE_API_KEY`）：网关转发场景下 `CLINE_PASS_API_KEY` 存的是网关 key，`api.cline.bot` 会以 401 拒绝
 
 ## 友情链接
 

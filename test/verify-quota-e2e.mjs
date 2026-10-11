@@ -120,6 +120,14 @@ let resolvedConfig = {
   },
 }
 
+// The registered LLM routes. Mutable so a later section can register one — a
+// real composition changes by recomposition, not by a fresh process.
+const llmProviders = [
+  { id: 'deepseek-official', name: 'DeepSeek' },
+  { id: 'pi-ai', name: 'pi-ai' },
+]
+const configurableProviders = [{ provider: 'pi-ai', displayName: 'pi-ai' }]
+
 const ctx = {
   get(name) {
     // Redirects the usage checkpoint into the temp home: `storageDir` derives
@@ -136,14 +144,17 @@ const ctx = {
         resolve: async (ref) => (
           ref === 'OPENCODE_API_KEY' ? { value: 'oc-test', source: 'file' }
             : ref === 'COMMANDCODE_API_KEY' ? { value: 'cc-test', source: 'file' }
-              : undefined
+              // Cline's OWN key, deliberately distinct from the gateway key a
+              // proxied setup stores under CLINE_PASS_API_KEY.
+              : ref === 'CLINE_API_KEY' ? { value: 'cline-test', source: 'file' }
+                : undefined
         ),
       }
     }
     if (name === 'llm') {
       return {
-        listProviders: () => [{ id: 'deepseek-official', name: 'DeepSeek' }, { id: 'pi-ai', name: 'pi-ai' }],
-        listConfigurableProviders: () => [{ provider: 'pi-ai', displayName: 'pi-ai' }],
+        listProviders: () => llmProviders,
+        listConfigurableProviders: () => configurableProviders,
       }
     }
     return undefined
@@ -189,6 +200,20 @@ globalThis.fetch = async (url, init) => {
         exceeded: '',
         fiveHour: { used: 4.5, cap: 14, exceeded: false, resetAt: 1790083955000 },
         weekly: { used: 12.0, cap: 35, exceeded: false, resetAt: 1790600000000 },
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  if (String(url).includes('api.cline.bot')) {
+    // Faithful to the live endpoint: the {success, data} envelope, the derived
+    // `type` words, and the nanosecond-precision `resetsAt` spells.
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        limits: [
+          { type: 'five_hour', percentUsed: 1, resetsAt: '2026-10-11T15:37:19.800691006Z' },
+          { type: 'weekly', percentUsed: 0, resetsAt: '2026-10-18T10:37:19.803209439Z' },
+          { type: 'monthly', percentUsed: 0, resetsAt: '2026-11-10T10:37:19.805517102Z' },
+        ],
       },
     }), { status: 200, headers: { 'content-type': 'application/json' } })
   }
@@ -363,6 +388,52 @@ console.log('\n8b. an explicit planId is an override that skips that request')
       commandcode: { ...resolvedConfig.providers.commandcode, planId: undefined },
     },
   }
+}
+
+console.log('\n8c. Cline: alias discovery + ClinePass windows')
+{
+  // Registrations happen here rather than up front so the earlier assertions
+  // keep describing the composition they were written against.
+  //
+  // This route is named after the SUBSCRIPTION (`cline-pass`), while the preset
+  // key is the VENDOR (`cline`) — so this section is also the alias test. With
+  // no alias support the provider would simply never be discovered, which is
+  // the failure mode that matters: the card would silently stay absent.
+  llmProviders.push({ id: 'cline-pass', name: 'Cline Pass' })
+  configurableProviders.push({ provider: 'cline-pass', displayName: 'Cline Pass' })
+
+  const listed = await (await route('GET', '/api/quota-monitor/settings')(new Request('http://dsh/api/quota-monitor/settings'))).json()
+  const entry = listed.autoProviders.find((a) => a.provider === 'cline-pass')
+  ok(entry !== undefined, 'an aliased route id is auto-discovered')
+  eq(entry?.kind, 'windows', 'the alias resolves to the preset kind')
+  eq(entry?.name, 'Cline Pass', "the route's own display name is what the card prints")
+
+  const before = seenRequests.length
+  const cline = await (await route('GET', '/api/quota-monitor?provider=cline-pass')(new Request('http://dsh/api/quota-monitor?provider=cline-pass'))).json()
+  eq(cline.provider, 'cline-pass', 'the snapshot keeps the ROUTE id, so local metering still lines up')
+  eq(cline.kind, 'windows', 'reports window kind')
+  eq(cline.windows.map((w) => [w.label, w.percent, w.seconds]), [
+    ['5h', 1, 18000], ['7d', 0, 604800], ['1m', 0, 2592000],
+  ], 'the three ClinePass windows map onto the shared window shape')
+  eq(cline.windows[0].resetsAt, '2026-10-11T15:37:19.800691006Z', 'resetsAt passes through untouched')
+  ok(cline.balance === undefined, 'no credit balance yet: that wallet needs a second hop')
+
+  const asked = seenRequests.slice(before)
+  ok(
+    asked.some((r) => r.url.includes('api.cline.bot') && r.url.includes('/plan/usage-limits')),
+    'queries the Cline account endpoint directly',
+  )
+  ok(
+    !asked.some((r) => r.url.includes('sub2api') || r.url.includes('marisa4219')),
+    'never routes the quota query through the inference gateway',
+  )
+  // The gateway key stored under CLINE_PASS_API_KEY is rejected by api.cline.bot
+  // with 401 (verified against the live service), so the preset must reference
+  // Cline's own key name or every query fails.
+  ok(
+    asked.some((r) => JSON.stringify(r.headers).includes('cline-test')),
+    'authenticates with the CLINE_API_KEY credential',
+  )
 }
 
 console.log('\n9. live usage event stream (SSE)')
