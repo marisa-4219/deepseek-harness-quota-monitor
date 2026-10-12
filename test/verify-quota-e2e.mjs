@@ -296,6 +296,10 @@ console.log('\n3. llm/stream metering')
 const waterfall = events.get('llm/stream')
 ok(typeof waterfall === 'function', 'subscribes to the llm/stream waterfall')
 const stream = (async function* () {
+  // A real attempt opens with block/text chunks before any usage arrives; the
+  // first content fragment is what the request log times as first-token latency.
+  yield { type: 'block-start', index: 0, blockType: 'text' }
+  yield { type: 'text-delta', index: 0, text: 'hel' }
   yield { type: 'usage', usage: { inputTokens: 1000, outputTokens: 500, cacheReadTokens: 300 } }
   yield { type: 'usage', usage: { inputTokens: 200, outputTokens: 100, cacheReadTokens: 50 } }
   yield { type: 'finish', reason: { kind: 'stop' } }
@@ -303,7 +307,7 @@ const stream = (async function* () {
 const wrapped = waterfall({ provider: 'opencode-go', model: 'kimi-k2' }, () => stream)
 let drained = 0
 for await (const _chunk of wrapped) drained++
-eq(drained, 3, 'passes every chunk through untouched')
+eq(drained, 5, 'passes every chunk through untouched')
 const after = await (await route('GET', '/api/quota-monitor')(new Request('http://dsh/api/quota-monitor'))).json()
 const go2 = after.find((s) => s.provider === 'opencode-go')
 eq(go2.todayUsed.tokens, 2150, 'records input + output + cache tokens')
@@ -312,6 +316,46 @@ eq(go2.todayUsed.input, 1200, 'keeps the input breakdown')
 eq(go2.todayUsed.cacheRead, 350, 'keeps the cache-read breakdown')
 ok(Array.isArray(go2.todayUsed.series) && go2.todayUsed.series.length === 24, 'emits a 24-hour series')
 eq(go2.windows.find((w) => w.label === '5h').usedTokens, 2150, 'window metering reads the same records')
+ok(Array.isArray(go2.requests) && go2.requests.length === 1, 'exposes recent attempts for the latency matrix')
+const attempt = go2.requests[0]
+eq(attempt.status, 'ok', 'records a stream that ran to completion as ok')
+ok(typeof attempt.ms === 'number' && attempt.ms >= 0, 'records the attempt duration')
+ok(typeof attempt.ttft === 'number' && attempt.ttft >= 0, 'times first-token latency from the first content chunk')
+eq(attempt.model, 'kimi-k2', 'keeps the model id for the cell tooltip')
+
+console.log('\n3b. a chunk carrying no output does not start the clock')
+const emptyStream = waterfall({ provider: 'opencode-go' }, () => (async function* () {
+  // isTokenDelta semantics: an empty text fragment is not the model answering.
+  yield { type: 'text-delta', index: 0, text: '' }
+  yield { type: 'finish', reason: { kind: 'stop' } }
+})())
+for await (const _chunk of emptyStream) { /* drain */ }
+const afterEmpty = await (await route('GET', '/api/quota-monitor')(new Request('http://dsh/api/quota-monitor'))).json()
+const emptyAttempt = afterEmpty.find((s) => s.provider === 'opencode-go').requests.at(-1)
+ok(emptyAttempt !== undefined, 'still records the attempt')
+ok(!('ttft' in emptyAttempt), 'omits first-token latency when no output chunk ever arrived')
+
+console.log('\n3c. outcomes are logged apart from usage')
+const failing = waterfall({ provider: 'opencode-go', model: 'kimi-k2' }, () => (async function* () {
+  yield { type: 'text-delta', index: 0, text: 'a' }
+  const err = new Error('slow down')
+  err.code = 'RATE_LIMIT'
+  err.providerRetryAfterMs = 5000
+  throw err
+})())
+let propagated = false
+try {
+  for await (const _chunk of failing) { /* drain */ }
+} catch { propagated = true }
+ok(propagated, 'a failed attempt still propagates to the caller')
+const afterFail = await (await route('GET', '/api/quota-monitor')(new Request('http://dsh/api/quota-monitor'))).json()
+const go3 = afterFail.find((s) => s.provider === 'opencode-go')
+eq(go3.requests.filter((r) => r.status === 'rate-limit').length, 1, 'records the rate-limited attempt in the request log')
+eq(go3.requests.filter((r) => typeof r.ttft === 'number').length, 2, 'keeps the latency it did observe before failing')
+eq(go3.todayUsed.requests, 2, 'a failed attempt does NOT inflate the usage request count')
+eq(go3.todayUsed.tokens, 2150, 'a failed attempt adds no tokens to the day')
+eq(go3.windows.find((w) => w.label === '5h').usedTokens, 2150, 'a failed attempt adds nothing to the 5h window')
+ok(go3.lastRateLimit !== undefined, 'still surfaces the rate limit on the snapshot')
 
 console.log('\n4. presets endpoint')
 const presets = await (await route('GET', '/api/quota-monitor/presets')(new Request('http://dsh/api/quota-monitor/presets'))).json()
